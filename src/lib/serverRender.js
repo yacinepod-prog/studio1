@@ -4,8 +4,7 @@
 // streams back over SSE, and the finished MP4 is returned as a Blob.
 //
 // BASE is empty by default (same origin — the backend serves this static UI).
-// For dev (frontend on :3000, backend on :4000) set NEXT_PUBLIC_RENDER_URL.
-const BASE = process.env.NEXT_PUBLIC_RENDER_URL || "";
+const BASE = (typeof process !== "undefined" && process.env && process.env.NEXT_PUBLIC_RENDER_URL) || (import.meta.env && import.meta.env.VITE_RENDER_URL) || "";
 
 // Is the ffmpeg render backend reachable? On a static host (e.g. Vercel) there is
 // no /status endpoint, so this resolves false and the app runs WebCodecs-only.

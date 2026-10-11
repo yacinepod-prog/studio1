@@ -465,16 +465,6 @@ export default function Editor({
       <div className="editor2__left">
         <LeftPanel
           tabs={[
-            { id: "templates", icon: "🎨", label: "Templates", title: "Templates & Presets / قوالب وستايلات", node: (
-              <TemplatesPanel
-                onApplyTemplate={applyTemplate}
-                currentSettings={{
-                  captionStyle, captionColor, captionAnimation, captionFont,
-                  captionSize, captionPosition, captionLineHeight, captionFontScale,
-                  effectId, effectIntensity,
-                }}
-              />
-            ) },
             { id: "captions", icon: "💬", label: "Captions", title: "Captions & Subtitles / نصوص وترجمة", node: (
               <CaptionsPanel
                 captionCues={captionCues} captionsOn={captionsOn} setCaptionsOn={setCaptionsOn}

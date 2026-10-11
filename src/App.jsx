@@ -14,12 +14,32 @@ import { makeSfx, serializeSfx } from "./lib/sfx";
 import Dropzone from "./components/Dropzone";
 import Editor from "./components/Editor";
 import ProjectsHome from "./components/ProjectsHome";
+import NarrativeWorkspace from "./components/NarrativeWorkspace";
+import SeoModal from "./components/SeoModal";
 import StorageRing from "./components/StorageRing";
 import { DialogHost, showAlert, showPrompt } from "./components/Dialog";
 import {
-  requestPersist, storageEstimate, listProjects, getProject, saveProject,
-  renameProject, deleteProject, getMedia, syncMedia, newId,
+  requestPersist,
+  storageEstimate,
+  listProjects,
+  getProject,
+  saveProject,
+  renameProject,
+  duplicateProject,
+  archiveProject,
+  deleteProject,
+  getMedia,
+  syncMedia,
+  newId,
+  getGlobalSettings,
+  saveGlobalSettings,
 } from "./lib/projectStore";
+import {
+  createDefaultGlobalSettings,
+  createDefaultNarrativeData,
+  computeProjectStatus,
+  formatFilenameTimestamp,
+} from "./lib/narrativeModel";
 
 function loadImageEl(file) {
   return new Promise((resolve) => {
@@ -30,9 +50,6 @@ function loadImageEl(file) {
   });
 }
 
-// Load a video clip as a still-poster Image (so the timeline/canvas draw it just
-// like a photo) while carrying the video's URL + duration for the trim scrubber
-// and export. img.url = poster (drawable), img.videoUrl = the actual video.
 function loadVideoEl(file) {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(file);
@@ -43,7 +60,7 @@ function loadVideoEl(file) {
         img.isVideo = true; img.videoUrl = url; img.videoDuration = dur || 0;
         resolve(img);
       };
-      img.onerror = () => { // poster failed — resolve a bare marker so it still imports
+      img.onerror = () => {
         img.url = null; img.fileName = file.name; img.isVideo = true;
         img.videoUrl = url; img.videoDuration = dur || 0; resolve(img);
       };
@@ -67,15 +84,6 @@ function loadVideoEl(file) {
   });
 }
 
-function fmtTime(sec) {
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  return `${m}:${String(s).padStart(2, "0")}`;
-}
-
-// Run an async fn over items with a concurrency limit. Loading 250 large images
-// (or opening 250 IndexedDB reads) all at once spikes memory/CPU and freezes the
-// tab; a small limit keeps it fast without the freeze.
 async function mapLimit(items, limit, fn) {
   const out = new Array(items.length);
   let i = 0;
@@ -86,8 +94,72 @@ async function mapLimit(items, limit, fn) {
   return out;
 }
 
-// Undo/redo over one composition snapshot. Object URLs are intentionally never
-// revoked, so an undone snapshot still points at a live image.
+// Create a silent WAV File of a given duration when the user opens the Video Editor
+// using manual/authoritative scene timings before uploading a final voiceover file.
+function createSilentWavFile(durationSec = 30) {
+  const dur = Math.max(2, Math.min(1800, Math.round(durationSec || 30)));
+  const sampleRate = 8000;
+  const numSamples = dur * sampleRate;
+  const buffer = new ArrayBuffer(44 + numSamples * 2);
+  const view = new DataView(buffer);
+  const writeStr = (offset, str) => {
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  };
+  writeStr(0, "RIFF");
+  view.setUint32(4, 36 + numSamples * 2, true);
+  writeStr(8, "WAVE");
+  writeStr(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, "data");
+  view.setUint32(40, numSamples * 2, true);
+  return new File([buffer], "timeline_guide_track.wav", { type: "audio/wav" });
+}
+
+// Create a styled scene placeholder image File when a scene has no uploaded image yet
+function createSceneCardFile(scene, width = 1280, height = 720) {
+  return new Promise((resolve) => {
+    const c = document.createElement("canvas");
+    c.width = width;
+    c.height = height;
+    const ctx = c.getContext("2d");
+    const grad = ctx.createLinearGradient(0, 0, width, height);
+    grad.addColorStop(0, "#0b132b");
+    grad.addColorStop(0.5, "#1c2541");
+    grad.addColorStop(1, "#0f172a");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, width, height);
+
+    ctx.strokeStyle = "rgba(0, 245, 155, 0.35)";
+    ctx.lineWidth = 4;
+    ctx.strokeRect(40, 40, width - 80, height - 80);
+
+    ctx.fillStyle = "#00f59b";
+    ctx.font = "bold 38px sans-serif";
+    ctx.fillText(`SCENE ${scene.sceneNumber}`, 90, 130);
+
+    ctx.fillStyle = "#f3f6fc";
+    ctx.font = "600 28px sans-serif";
+    const desc = String(scene.visualDescription || scene.mainSubject || "Scene Visual").slice(0, 90);
+    ctx.fillText(desc, 90, 200);
+
+    ctx.fillStyle = "#94a3be";
+    ctx.font = "22px sans-serif";
+    const excerpt = String(scene.scriptExcerpt || "").slice(0, 110);
+    ctx.fillText(`"${excerpt}..."`, 90, 265);
+
+    const tsName = `${formatFilenameTimestamp(scene.startTime)}.png`;
+    c.toBlob((blob) => {
+      resolve(new File([blob || new Blob()], tsName, { type: "image/png" }));
+    }, "image/png");
+  });
+}
+
 function useHistory(initial) {
   const [hist, setHist] = useState({ past: [], present: initial, future: [] });
   const commit = useCallback((updater) => {
@@ -114,8 +186,6 @@ function useHistory(initial) {
   ];
 }
 
-// A slot is one point on the timeline: { id, seconds, file, img, empty }.
-// Empty slots are placeholders (a removed image or the lead-in you filled out).
 export default function Home() {
   const [audioFile, setAudioFile] = useState(null);
   const [audioUrl, setAudioUrl] = useState(null);
@@ -127,51 +197,68 @@ export default function Home() {
     }
     return "dark";
   });
+  const [uiLang, setUiLang] = useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("app_ui_lang") || "en";
+    }
+    return "en";
+  });
   useEffect(() => {
     if (typeof document !== "undefined") {
       document.documentElement.setAttribute("data-theme", theme);
       localStorage.setItem("app_theme", theme);
     }
   }, [theme]);
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("app_ui_lang", uiLang);
+    }
+  }, [uiLang]);
+
+  const [globalSettings, setGlobalSettings] = useState(() => createDefaultGlobalSettings());
+  const [dashboardNav, setDashboardNav] = useState("home"); // "home" | "projects" | "templates" | "settings"
+  const [seoModalOpen, setSeoModalOpen] = useState(false);
+
   const [aspect, setAspect] = useState("16:9");
   const [fps, setFps] = useState(30);
-  const [renderQuality, setRenderQuality] = useState("full"); // "full" | "720p"
+  const [renderQuality, setRenderQuality] = useState("full");
   const [transitionDuration, setTransitionDuration] = useState(DEFAULT_TRANSITION_DURATION);
-  const [fadeIn, setFadeIn] = useState(0.5);          // opening fade seconds (0 = off)
-  const [fadeOut, setFadeOut] = useState(0.6);        // ending fade seconds (0 = off)
-  const [motionByName, setMotionByName] = useState({}); // clip name -> zoomin | zoomout
-  const [motionAmount, setMotionAmount] = useState(0.08); // Ken Burns zoom depth (0–0.2)
-  const [trimByName, setTrimByName] = useState({});   // video clip name -> in-point seconds
-  const [volumeByName, setVolumeByName] = useState({}); // video clip name -> 0..1 (default 0.5)
-  const [fitByName, setFitByName] = useState({});     // video clip name -> "fit" (fast-fwd, default) | "trim" (1x)
-  const [effectByName, setEffectByName] = useState({}); // clip name -> { id, intensity } (per-clip effect override)
-  const [trimEnd, setTrimEnd] = useState(0); // export end point (0 = untrimmed / full audio)
-  const [captionRaw, setCaptionRaw] = useState(null); // uploaded transcript text
+  const [fadeIn, setFadeIn] = useState(0.5);
+  const [fadeOut, setFadeOut] = useState(0.6);
+  const [motionByName, setMotionByName] = useState({});
+  const [motionAmount, setMotionAmount] = useState(0.08);
+  const [trimByName, setTrimByName] = useState({});
+  const [volumeByName, setVolumeByName] = useState({});
+  const [fitByName, setFitByName] = useState({});
+  const [effectByName, setEffectByName] = useState({});
+  const [trimEnd, setTrimEnd] = useState(0);
+  const [captionRaw, setCaptionRaw] = useState(null);
   const [captionName, setCaptionName] = useState(null);
-  const [sfx, setSfx] = useState([]);            // placed sound effects: [{ id, name, src, at, volume }]
-  const [sfxUploads, setSfxUploads] = useState([]); // uploaded sound library: [{ mediaId, label, url, _file }]
-  const [selectedSound, setSelectedSound] = useState(null); // { name, src, url } to place on the FX track
-  const [importing, setImporting] = useState(null);   // { done, total } while decoding imports
-  const [built, setBuilt] = useState(false);          // committed images to the timeline?
+  const [sfx, setSfx] = useState([]);
+  const [sfxUploads, setSfxUploads] = useState([]);
+  const [selectedSound, setSelectedSound] = useState(null);
+  const [importing, setImporting] = useState(null);
+  const [built, setBuilt] = useState(false);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
   const [outUrl, setOutUrl] = useState(null);
   const [error, setError] = useState(null);
-  // A render that was already running when this tab loaded (e.g. reopened after
-  // closing the browser mid-render). Shown as a banner and reconnected to.
-  const [resume, setResume] = useState(null); // { busy, progress, url, error }
-  // Projects: everything is stored client-side in IndexedDB (see lib/projectStore).
-  const [view, setView] = useState("list");            // "list" (projects grid) | "editor"
+  const [resume, setResume] = useState(null);
+  const [view, setView] = useState("list"); // "list" | "editor"
   const [projects, setProjects] = useState([]);
-  const [currentProject, setCurrentProject] = useState(null); // { id, name, createdAt }
+  const [currentProject, setCurrentProject] = useState(null);
+  const [narrative, setNarrative] = useState(() => createDefaultNarrativeData());
   const [storage, setStorage] = useState({ usage: 0, quota: 0 });
   const [loadingProject, setLoadingProject] = useState(false);
-  const [editorTab, setEditorTab] = useState("templates");
+  const [editorTab, setEditorTab] = useState("captions");
   const saveRef = useRef(null);
   const idRef = useRef(0);
   const nextId = () => `s${idRef.current++}`;
 
-  // Composition (undoable): slots + per-clip transitions + color filters + caption styling, snapshotted together.
+  const updateNarrative = useCallback((updater) => {
+    setNarrative((prev) => (typeof updater === "function" ? updater(prev) : updater));
+  }, []);
+
   const [doc, commitDoc, { undo, redo, canUndo, canRedo, reset: resetDoc }] =
     useHistory({
       slots: [],
@@ -248,16 +335,16 @@ export default function Home() {
       setAudioUrl(URL.createObjectURL(file));
       setAudioDuration(d);
       getWaveformPeaks(file).then(setPeaks);
+      setNarrative((prev) => ({
+        ...prev,
+        actualDurationSec: Math.round(d),
+      }));
     } catch (e) { setError(e.message); }
   }, []);
 
-  // Import images, merged by timestamp: a file whose timestamp matches an
-  // existing slot fills/replaces it; otherwise it becomes a new slot.
   const addImages = useCallback(async (fileList) => {
     const files = Array.from(fileList).filter((f) => f.type.startsWith("image/") || f.type.startsWith("video/"));
     if (!files.length) return;
-    // Decoding many files (esp. video posters) takes a few seconds with no UI —
-    // show live "loaded X of N" progress, ticking up as each file finishes.
     setImporting({ done: 0, total: files.length });
     try {
       const loaded = await Promise.all(
@@ -268,23 +355,22 @@ export default function Home() {
         })
       );
       commitDoc((d) => {
-      const next = d.slots.map((s) => ({ ...s }));
-      for (const { file, seconds, img } of loaded) {
-        const slot = seconds != null ? next.find((s) => s.seconds === seconds) : null;
-        if (slot) {
-          slot.file = file; slot.img = img; slot.empty = false;
-        } else {
-          next.push({ id: nextId(), seconds, file, img, empty: false });
+        const next = d.slots.map((s) => ({ ...s }));
+        for (const { file, seconds, img } of loaded) {
+          const slot = seconds != null ? next.find((s) => s.seconds === seconds) : null;
+          if (slot) {
+            slot.file = file; slot.img = img; slot.empty = false;
+          } else {
+            next.push({ id: nextId(), seconds, file, img, empty: false });
+          }
         }
-      }
-      return { ...d, slots: next };
+        return { ...d, slots: next };
       });
     } finally {
       setImporting(null);
     }
   }, [commitDoc]);
 
-  // Swap the image/video in one slot, keeping its timestamp.
   const replaceImage = useCallback(async (id, file) => {
     if (!file) return;
     const isVid = file.type.startsWith("video/");
@@ -296,12 +382,10 @@ export default function Home() {
     }));
   }, [commitDoc]);
 
-  // Discard a staged image entirely (used in the pre-build import tray).
   const discardImage = useCallback((id) => {
     commitDoc((d) => ({ ...d, slots: d.slots.filter((s) => s.id !== id) }));
   }, [commitDoc]);
 
-  // Removing an image turns its slot into a placeholder — neighbours don't move.
   const removeImage = useCallback((id) => {
     commitDoc((d) => ({
       ...d,
@@ -309,7 +393,6 @@ export default function Home() {
     }));
   }, [commitDoc]);
 
-  // Fill a gap. LEAD_IN adds a new slot at 0; otherwise fill the empty slot.
   const fillGap = useCallback(async (name, file) => {
     if (!file) return;
     const isVid = file.type.startsWith("video/");
@@ -323,9 +406,6 @@ export default function Home() {
     });
   }, [commitDoc]);
 
-  // Roll edit: move the boundary between an image and the next clip by setting
-  // the next clip's slot start. buildTimeline re-derives both durations; total
-  // length and every other slot are untouched. One commit = one undo step.
   const resizeBoundary = useCallback((id, seconds) => {
     commitDoc((d) => ({
       ...d,
@@ -333,17 +413,18 @@ export default function Home() {
     }));
   }, [commitDoc]);
 
-  // Read an uploaded transcript; parsing happens in a memo below so it re-syncs
-  // if the audio length changes.
   const onCaptionFile = useCallback(async (file) => {
     if (!file) return;
+    const f = file instanceof File ? file : file[0];
+    if (!f) return;
     try {
-      const text = await file.text();
+      const text = await f.text();
       setCaptionRaw(text);
-      setCaptionName(file.name);
+      setCaptionName(f.name);
       setCaptionsOn(true);
     } catch (e) { setError(e.message || String(e)); }
-  }, []);
+  }, [setCaptionsOn]);
+
   const captionParse = useMemo(
     () => (captionRaw ? parseTranscript(captionRaw, audioDuration) : { cues: [], error: null }),
     [captionRaw, audioDuration]
@@ -351,7 +432,6 @@ export default function Home() {
   const captionCues = captionParse.cues;
   const captionError = captionParse.error;
 
-  // On load, reconnect to a render that's still running on the server.
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -376,7 +456,6 @@ export default function Home() {
   const applyTransitionAll = useCallback((type, clipNames) => {
     commitDoc((d) => {
       const next = {};
-      // Skip the first clip — it has no incoming cut.
       for (let i = 1; i < clipNames.length; i++) next[clipNames[i]] = type;
       return { ...d, transitionsByName: next };
     });
@@ -394,7 +473,6 @@ export default function Home() {
   const setFit = useCallback((name, mode) => {
     setFitByName((prev) => ({ ...prev, [name]: mode }));
   }, []);
-  // Per-clip effect override: patch merges into { id:"none", intensity:0.5 }.
   const setClipEffect = useCallback((name, patch) => {
     setEffectByName((prev) => ({ ...prev, [name]: { id: "none", intensity: 0.5, ...(prev[name] || {}), ...patch } }));
   }, []);
@@ -402,7 +480,6 @@ export default function Home() {
     setEffectByName((prev) => { const next = { ...prev }; delete next[name]; return next; });
   }, []);
 
-  // ---- Sound effects ----
   const addSfx = useCallback((at) => {
     setSelectedSound((sel) => {
       if (sel) setSfx((prev) => [...prev, makeSfx(sel.name, sel.src, at)]);
@@ -427,7 +504,6 @@ export default function Home() {
     setSfxUploads((prev) => [...prev, entry]);
     setSelectedSound({ name: label, src: { kind: "upload", mediaId }, url });
   }, []);
-  // Resolve a runtime url for each placed instance (public path or uploaded objectURL).
   const sfxUrlFor = useCallback((src) => {
     if (!src) return null;
     if (src.kind === "lib") return src.file;
@@ -448,10 +524,8 @@ export default function Home() {
       return next;
     });
   }, []);
-  // Random mix: assign each cut a transition drawn randomly from `picks`
-  // (no back-to-back repeats). One commit = one undo step.
   const applyTransitionMix = useCallback((picks, clipNames) => {
-    const cutNames = clipNames.slice(1); // first image has no incoming transition
+    const cutNames = clipNames.slice(1);
     const assigned = mixTransitions(picks, cutNames.length);
     commitDoc((d) => {
       const next = {};
@@ -460,7 +534,6 @@ export default function Home() {
     });
   }, [commitDoc]);
 
-  // Keyboard: Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z or Ctrl+Y redo.
   useEffect(() => {
     const onKey = (e) => {
       const tag = (e.target.tagName || "").toLowerCase();
@@ -482,8 +555,6 @@ export default function Home() {
     })),
     [slots]
   );
-  // Images and videos are uploaded on separate maps (the backend tells them apart
-  // by extension anyway, but this keeps the client render spec explicit).
   const imagesByName = useMemo(() => {
     const m = {};
     for (const s of slots) if (!s.empty && s.file && !(s.img && s.img.isVideo)) m[s.id] = s.file;
@@ -494,7 +565,6 @@ export default function Home() {
     for (const s of slots) if (!s.empty && s.file && s.img && s.img.isVideo) m[s.id] = s.file;
     return m;
   }, [slots]);
-  // Video URL + duration per clip, for the trim scrubber in the inspector.
   const videoInfoByName = useMemo(() => {
     const m = {};
     for (const s of slots) if (!s.empty && s.img && s.img.isVideo) {
@@ -509,16 +579,6 @@ export default function Home() {
   }, [slots]);
   const imageCount = useMemo(() => slots.filter((s) => !s.empty && s.img).length, [slots]);
 
-  // Staged thumbnails for the pre-build import tray, ordered by timestamp
-  // (files with no parseable timestamp sort last and are flagged).
-  const tray = useMemo(
-    () => slots
-      .filter((s) => !s.empty && s.img)
-      .map((s) => ({ id: s.id, url: s.img.url, name: s.img.fileName || (s.file && s.file.name) || "", seconds: s.seconds }))
-      .sort((a, b) => (a.seconds == null ? Infinity : a.seconds) - (b.seconds == null ? Infinity : b.seconds)),
-    [slots]
-  );
-
   const sample = useMemo(() => {
     const imaged = slots
       .filter((s) => !s.empty && s.img && s.seconds != null)
@@ -528,14 +588,11 @@ export default function Home() {
   }, [slots]);
 
   const dims = useMemo(() => resolveDimensions(aspect, sample), [aspect, sample]);
-  // The resolution actually exported: capped to 720p when the faster option is on.
   const renderDims = useMemo(
     () => (renderQuality === "720p" ? capTo720(dims) : dims),
     [renderQuality, dims]
   );
 
-  // On mobile (touch), default to the lighter settings — ~2x faster, far less
-  // CPU/RAM load (which also helps avoid Termux connection drops). Runs once.
   useEffect(() => {
     try {
       if (window.matchMedia && window.matchMedia("(pointer: coarse)").matches) {
@@ -544,12 +601,12 @@ export default function Home() {
       }
     } catch { /* ignore */ }
   }, []);
+
   const { clips, warnings } = useMemo(
     () => buildTimeline(items, audioDuration),
     [items, audioDuration]
   );
 
-  // A new voiceover resets any prior trim to the full length.
   useEffect(() => { setTrimEnd(audioDuration); }, [audioDuration]);
 
   const exportDuration = trimEnd > 0 ? Math.min(trimEnd, audioDuration) : audioDuration;
@@ -557,24 +614,181 @@ export default function Home() {
   const ready = audioFile && clips.length > 0;
   const showEditor = built && ready;
 
-  // --- Projects: client-side persistence (IndexedDB) ------------------------
-  // On launch, ask for durable storage and load the saved projects list.
+  const applyChannelEditorPresets = useCallback((channel) => {
+    if (!channel) return;
+    if (channel.aspectRatio) {
+      setAspect(channel.aspectRatio);
+    }
+    const ed = channel.editorConfig;
+    if (!ed) return;
+    if (ed.transitionDuration != null) setTransitionDuration(ed.transitionDuration);
+    if (ed.motionAmount != null) setMotionAmount(ed.motionAmount);
+    if (ed.fadeIn != null) setFadeIn(ed.fadeIn);
+    if (ed.fadeOut != null) setFadeOut(ed.fadeOut);
+
+    commitDoc((d) => {
+      const slotIds = (d.slots || []).filter((s) => !s.empty && s.img).map((s) => s.id);
+      const nextTransitions = { ...(d.transitionsByName || {}) };
+      if (slotIds.length > 1 && ed.transitionType) {
+        if (ed.transitionType === "mix") {
+          const customPool =
+            Array.isArray(ed.transitionMixPool) && ed.transitionMixPool.length
+              ? ed.transitionMixPool
+              : ["fade", "wipeleft", "wiperight", "slideleft", "circleopen", "zoomin"];
+          const assigned = mixTransitions(customPool, slotIds.length - 1);
+          slotIds.slice(1).forEach((id, i) => {
+            nextTransitions[id] = assigned[i];
+          });
+        } else {
+          slotIds.slice(1).forEach((id) => {
+            nextTransitions[id] = ed.transitionType;
+          });
+        }
+      }
+      return {
+        ...d,
+        effectId: ed.effectId || d.effectId || "none",
+        effectIntensity: ed.effectIntensity ?? d.effectIntensity ?? 0.5,
+        captionsOn: ed.captionsOn ?? d.captionsOn ?? true,
+        captionStyle: ed.captionStyle || d.captionStyle || "classic",
+        captionFont: ed.captionFont || d.captionFont || "montserrat",
+        captionColor: ed.captionColor || d.captionColor || "#FFFFFF",
+        captionAnimation: ed.captionAnimation || d.captionAnimation || "pop",
+        captionSize: ed.captionSize || d.captionSize || "md",
+        captionPosition: ed.captionPosition ?? d.captionPosition ?? 0,
+        transitionsByName: nextTransitions,
+      };
+    });
+  }, [commitDoc]);
+
+  // --- Sync Narrative Scenes & Prompts directly into Video Editor Slots ---
+  const syncScenesToEditorSlots = useCallback(async () => {
+    const channels = globalSettings?.channels || [];
+    const activeChannel =
+      channels.find((c) => c.id === (narrative.channelId || globalSettings?.defaultChannelId)) ||
+      channels[0] ||
+      null;
+
+    // 1. Ensure an audio track exists (use uploaded/generated audio or create a guide track matching authoritative duration)
+    if (!audioFile) {
+      const targetSec = narrative.actualDurationSec || (narrative.config?.targetDurationMinutes || 2) * 60;
+      const silentFile = createSilentWavFile(targetSec);
+      await onAudio([silentFile]);
+    }
+    // 2. Apply project aspect ratio from channel or narrative config
+    if (activeChannel?.aspectRatio) {
+      setAspect(activeChannel.aspectRatio);
+    } else if (narrative.config?.aspectRatio) {
+      setAspect(narrative.config.aspectRatio);
+    }
+    // 3. For any scene without an uploaded slot image, generate a clean visual storyboard card so the editor timeline has every scene
+    const scenes = narrative.scenes || [];
+    const validSlots = slots.filter((s) => !s.empty && s.img);
+    if (scenes.length > 0) {
+      const missingFiles = [];
+      for (let i = 0; i < scenes.length; i++) {
+        const sc = scenes[i];
+        const expectedSec = Math.floor(sc.startTime || 0);
+        const hasSlot =
+          validSlots.some(
+            (s) =>
+              s.seconds != null &&
+              (Math.abs(s.seconds - expectedSec) < 0.9 ||
+                Math.abs(s.seconds - sc.startTime) < 0.9)
+          ) || Boolean(validSlots[i]);
+        if (!hasSlot) {
+          const cardFile = await createSceneCardFile(sc);
+          missingFiles.push(cardFile);
+        }
+      }
+      if (missingFiles.length > 0) {
+        await addImages(missingFiles);
+      }
+    } else if (validSlots.length === 0) {
+      // If user jumps directly to Stage 9 Editor before generating scenes, create a starter scene card at 0-00.png
+      const starterCard = await createSceneCardFile({
+        sceneNumber: 1,
+        startTime: 0,
+        visualDescription: currentProject?.name || "Scene 1 — Ready for Media",
+        scriptExcerpt: narrative.scriptDraft || "Upload or generate scenes to populate the timeline.",
+      });
+      await addImages([starterCard]);
+    }
+
+    // 4. Automatically apply Channel Editor Presets (Filters, Effects, Transitions, Motion, Captions)
+    if (activeChannel) {
+      applyChannelEditorPresets(activeChannel);
+      const ed = activeChannel.editorConfig || {};
+      const mode = ed.motionMode || "alternate";
+      setTimeout(() => {
+        commitDoc((d) => {
+          const slotIds = (d.slots || []).filter((s) => !s.empty && s.img).map((s) => s.id);
+          if (slotIds.length > 0) {
+            const nextMotion = {};
+            slotIds.forEach((id, idx) => {
+              if (mode === "alternate") nextMotion[id] = idx % 2 === 0 ? "zoomin" : "zoomout";
+              else if (mode === "zoomin" || mode === "zoomout") nextMotion[id] = mode;
+              else nextMotion[id] = "none";
+            });
+            setMotionByName(nextMotion);
+          }
+          const nextTransitions = { ...(d.transitionsByName || {}) };
+          if (slotIds.length > 1 && ed.transitionType) {
+            if (ed.transitionType === "mix") {
+              const customPool =
+                Array.isArray(ed.transitionMixPool) && ed.transitionMixPool.length
+                  ? ed.transitionMixPool
+                  : ["fade", "wipeleft", "wiperight", "slideleft", "circleopen", "zoomin"];
+              const assigned = mixTransitions(customPool, slotIds.length - 1);
+              slotIds.slice(1).forEach((id, i) => {
+                nextTransitions[id] = assigned[i];
+              });
+            } else {
+              slotIds.slice(1).forEach((id) => {
+                nextTransitions[id] = ed.transitionType;
+              });
+            }
+          }
+          return { ...d, transitionsByName: nextTransitions };
+        });
+      }, 60);
+    }
+  }, [audioFile, narrative, onAudio, slots, addImages, currentProject, globalSettings, applyChannelEditorPresets, commitDoc]);
+
+  const handleOpenVideoEditor = useCallback(async () => {
+    await syncScenesToEditorSlots();
+    setBuilt(true);
+    setNarrative((prev) => ({
+      ...prev,
+      currentStage: 9,
+      maxUnlockedStage: Math.max(prev.maxUnlockedStage || 8, 10),
+    }));
+  }, [syncScenesToEditorSlots]);
+
+  // --- Load projects & global settings on startup ---
   useEffect(() => {
     (async () => {
       try {
         await requestPersist();
+        const savedSettings = await getGlobalSettings();
+        if (savedSettings) setGlobalSettings(savedSettings);
         setProjects(await listProjects());
         setStorage(await storageEstimate());
       } catch (_) {}
     })();
   }, []);
 
+  const handleSaveGlobalSettings = useCallback(async (newSettings) => {
+    setGlobalSettings(newSettings);
+    await saveGlobalSettings(newSettings);
+  }, []);
+
   const resetAllState = useCallback(() => {
-    // Touch devices default to lighter 720p / 24fps (less CPU/RAM) for new projects.
     let coarse = false;
     try { coarse = !!(window.matchMedia && window.matchMedia("(pointer: coarse)").matches); } catch (_) {}
     setAudioFile(null); setAudioUrl(null); setAudioDuration(0); setPeaks([]);
-    setAspect("16:9"); setFps(coarse ? 24 : 30); setRenderQuality(coarse ? "720p" : "full");
+    setAspect(globalSettings?.imageSettings?.aspectRatio || "16:9");
+    setFps(coarse ? 24 : 30); setRenderQuality(coarse ? "720p" : "full");
     setTransitionDuration(DEFAULT_TRANSITION_DURATION); setFadeIn(0.5); setFadeOut(0.6);
     setMotionByName({}); setMotionAmount(0.08); setTrimByName({}); setVolumeByName({}); setFitByName({}); setEffectByName({});
     setTrimEnd(0);
@@ -597,20 +811,20 @@ export default function Home() {
       captionFontScale: null,
       captionsOn: false,
     });
+    setNarrative(createDefaultNarrativeData(globalSettings));
     setBuilt(false);
-  }, [resetDoc]);
+  }, [resetDoc, globalSettings]);
 
   const newProject = useCallback(() => {
     resetAllState();
-    setCurrentProject({ id: newId(), name: "Untitled project", createdAt: Date.now() });
+    setCurrentProject({ id: newId(), name: "My Awesome Project", createdAt: Date.now() });
     setView("editor");
   }, [resetAllState]);
 
-  // A small JPEG thumbnail from the first image, stored with the project.
   const makeThumb = useCallback(() => {
     const s = slots.find((x) => !x.empty && x.img);
     const img = s && s.img;
-    if (!img) return null;
+    if (!img) return narrative?.reference?.thumbnailUrl || null;
     try {
       const iw = img.naturalWidth || img.videoWidth || 320;
       const ih = img.naturalHeight || img.videoHeight || 180;
@@ -618,27 +832,30 @@ export default function Home() {
       const c = document.createElement("canvas"); c.width = W; c.height = H;
       c.getContext("2d").drawImage(img, 0, 0, W, H);
       return c.toDataURL("image/jpeg", 0.7);
-    } catch (_) { return (img.url && String(img.url).startsWith("data:")) ? img.url : null; }
-  }, [slots]);
+    } catch (_) { return (img.url && String(img.url).startsWith("data:")) ? img.url : (narrative?.reference?.thumbnailUrl || null); }
+  }, [slots, narrative]);
 
-  // Serialize the edit state (no media bytes) for the projects store.
-  const buildProjectData = useCallback(() => ({
-    v: 1,
-    settings: { aspect, fps, renderQuality, transitionDuration, fadeIn, fadeOut, motionAmount, trimEnd, effectId, effectIntensity },
-    maps: { motionByName, trimByName, volumeByName, fitByName, effectByName },
-    captions: { captionRaw, captionName, captionsOn, captionStyle, captionColor, captionAnimation, captionSize, captionLineHeight, captionFontScale, captionFont, captionPosition },
-    sfx: serializeSfx(sfx),
-    sfxUploads: sfxUploads.map((u) => ({ mediaId: u.mediaId, label: u.label })),
-    transitionsByName,
-    slots: slots.map((s) => ({
-      id: s.id, seconds: s.seconds, empty: !!s.empty,
-      fileName: s.file ? s.file.name : (s.img && s.img.fileName) || null,
-      isVideo: !!(s.img && s.img.isVideo),
-    })),
-    audioName: audioFile ? audioFile.name : null,
-    idCounter: idRef.current,
-    built,
-  }), [aspect, fps, renderQuality, transitionDuration, fadeIn, fadeOut, effectId, effectIntensity, motionAmount, trimEnd,
+  const buildProjectData = useCallback(() => {
+    const { progressPct, status } = computeProjectStatus(narrative, built);
+    return {
+      v: 2,
+      narrative: { ...narrative, progressPct, status },
+      settings: { aspect, fps, renderQuality, transitionDuration, fadeIn, fadeOut, motionAmount, trimEnd, effectId, effectIntensity },
+      maps: { motionByName, trimByName, volumeByName, fitByName, effectByName },
+      captions: { captionRaw, captionName, captionsOn, captionStyle, captionColor, captionAnimation, captionSize, captionLineHeight, captionFontScale, captionFont, captionPosition },
+      sfx: serializeSfx(sfx),
+      sfxUploads: sfxUploads.map((u) => ({ mediaId: u.mediaId, label: u.label })),
+      transitionsByName,
+      slots: slots.map((s) => ({
+        id: s.id, seconds: s.seconds, empty: !!s.empty,
+        fileName: s.file ? s.file.name : (s.img && s.img.fileName) || null,
+        isVideo: !!(s.img && s.img.isVideo),
+      })),
+      audioName: audioFile ? audioFile.name : null,
+      idCounter: idRef.current,
+      built,
+    };
+  }, [narrative, aspect, fps, renderQuality, transitionDuration, fadeIn, fadeOut, effectId, effectIntensity, motionAmount, trimEnd,
       motionByName, trimByName, volumeByName, fitByName, effectByName,
       captionRaw, captionName, captionsOn, captionStyle, captionColor, captionAnimation, captionSize, captionLineHeight, captionFontScale,
       captionFont, captionPosition, sfx, sfxUploads,
@@ -646,11 +863,20 @@ export default function Home() {
 
   const saveCurrent = useCallback(async () => {
     const proj = currentProject;
-    if (!proj || loadingProject) return; // never save a half-loaded project
+    if (!proj || loadingProject) return;
     try {
+      const { progressPct, status } = computeProjectStatus(narrative, built);
       const rec = {
-        id: proj.id, name: proj.name, createdAt: proj.createdAt || Date.now(),
-        thumb: makeThumb(), durationSec: exportDuration, clipCount: clips.length,
+        id: proj.id,
+        name: proj.name,
+        createdAt: proj.createdAt || Date.now(),
+        thumb: makeThumb(),
+        durationSec: exportDuration || narrative.actualDurationSec || (narrative.config?.targetDurationMinutes || 12) * 60,
+        clipCount: clips.length || (narrative.scenes?.length || 0),
+        niche: narrative.selectedConcept?.niche || narrative.analysis?.niche || "Documentary",
+        currentStage: built ? 9 : (narrative.currentStage || 1),
+        progressPct,
+        status,
         data: buildProjectData(),
       };
       await saveProject(rec);
@@ -660,16 +886,15 @@ export default function Home() {
       for (const u of sfxUploads) if (u._file) wanted.set(u.mediaId, u._file);
       await syncMedia(proj.id, wanted);
       try { setStorage(await storageEstimate()); } catch (_) {}
-    } catch (_) { /* storage full or unavailable — keep editing */ }
-  }, [currentProject, loadingProject, makeThumb, exportDuration, clips.length, buildProjectData, audioFile, slots, sfxUploads]);
+    } catch (_) {}
+  }, [currentProject, loadingProject, narrative, built, makeThumb, exportDuration, clips.length, buildProjectData, audioFile, slots, sfxUploads]);
   saveRef.current = saveCurrent;
 
-  // Debounced autosave whenever the composition changes.
   useEffect(() => {
     if (view !== "editor" || !currentProject || loadingProject) return;
-    const t = setTimeout(() => { if (saveRef.current) saveRef.current(); }, 1200);
+    const t = setTimeout(() => { if (saveRef.current) saveRef.current(); }, 1000);
     return () => clearTimeout(t);
-  }, [view, currentProject, loadingProject, slots, transitionsByName, aspect, fps, renderQuality, transitionDuration,
+  }, [view, currentProject, loadingProject, narrative, slots, transitionsByName, aspect, fps, renderQuality, transitionDuration,
       fadeIn, fadeOut, effectId, effectIntensity, motionByName, motionAmount, trimByName, volumeByName, fitByName, effectByName, trimEnd,
       captionRaw, captionName, captionsOn, captionStyle, captionSize, captionLineHeight, captionFontScale,
       captionFont, captionPosition, sfx, sfxUploads,
@@ -679,15 +904,11 @@ export default function Home() {
     const rec = await getProject(id);
     if (!rec) return;
     const d = rec.data || {};
-    // Open the editor shell right away with a loader; media loads in the background.
-    // (loadingProject guards autosave so this cleared state is never saved back.)
     resetAllState();
     setCurrentProject({ id: rec.id, name: rec.name, createdAt: rec.createdAt });
     setLoadingProject(true);
     setView("editor");
     try {
-      // Decode the audio and ALL slot media in parallel — 100+ images loading
-      // one-by-one is what made opening slow.
       const audioP = (async () => {
         if (!d.audioName) return null;
         const blob = await getMedia(id, "audio");
@@ -704,7 +925,6 @@ export default function Home() {
         const img = sm.isVideo ? await loadVideoEl(file) : await loadImageEl(file);
         return { id: sm.id, seconds: sm.seconds, file, img, empty: false };
       });
-      // Uploaded SFX blobs -> objectURLs (bundled sounds need no media).
       const sfxUpP = mapLimit(d.sfxUploads || [], 8, async (u) => {
         const blob = await getMedia(id, u.mediaId);
         if (!blob) return null;
@@ -714,7 +934,6 @@ export default function Home() {
       const [audio, newSlots, sfxUp] = await Promise.all([audioP, slotsP, sfxUpP]);
       setSfxUploads(sfxUp.filter(Boolean));
       setSfx(d.sfx || []);
-      // Commit the loaded project.
       if (audio) {
         setAudioFile(audio.file); setAudioUrl(URL.createObjectURL(audio.file));
         setAudioDuration(audio.dur);
@@ -738,6 +957,12 @@ export default function Home() {
         captionFontScale: cp.captionFontScale ?? null,
         captionsOn: !!cp.captionsOn,
       });
+      if (d.narrative) {
+        setNarrative({
+          ...createDefaultNarrativeData(globalSettings),
+          ...d.narrative,
+        });
+      }
       setAspect(st.aspect ?? "16:9"); setFps(st.fps ?? 30); setRenderQuality(st.renderQuality ?? "full");
       setTransitionDuration(st.transitionDuration ?? DEFAULT_TRANSITION_DURATION);
       setFadeIn(st.fadeIn ?? 0.5); setFadeOut(st.fadeOut ?? 0.6);
@@ -749,10 +974,8 @@ export default function Home() {
       idRef.current = d.idCounter || newSlots.length;
       setBuilt(!!d.built);
     } finally { setLoadingProject(false); }
-  }, [resetDoc, resetAllState]);
+  }, [resetDoc, resetAllState, globalSettings]);
 
-  // navigator.storage.estimate() lags behind an IndexedDB delete/write, so re-poll
-  // a few times to catch the freed/added space without needing a manual refresh.
   const refreshStorage = useCallback(() => {
     const tick = async () => { try { setStorage(await storageEstimate()); } catch (_) {} };
     tick();
@@ -776,13 +999,30 @@ export default function Home() {
     setCurrentProject((p) => (p && p.id === id ? { ...p, name } : p));
     setProjects(await listProjects());
   }, []);
+
+  const onDuplicateProject = useCallback(async (id) => {
+    await duplicateProject(id);
+    setProjects(await listProjects());
+    refreshStorage();
+  }, [refreshStorage]);
+
+  const onArchiveProject = useCallback(async (id, archived) => {
+    await archiveProject(id, archived);
+    setProjects(await listProjects());
+  }, []);
+
   const onDeleteProject = useCallback(async (id) => {
     await deleteProject(id);
     setProjects(await listProjects());
     refreshStorage();
   }, [refreshStorage]);
-  const renameCurrent = useCallback(async () => {
+
+  const renameCurrent = useCallback(async (directName, isInline = false) => {
     if (!currentProject) return;
+    if (isInline && typeof directName === "string") {
+      setCurrentProject((p) => (p ? { ...p, name: directName } : p));
+      return;
+    }
     const name = await showPrompt("Rename project", {
       title: "Rename project", defaultValue: currentProject.name || "Untitled project", okText: "Rename",
     });
@@ -806,10 +1046,6 @@ export default function Home() {
       const exportClips = trimClips(clips, exportDuration);
       const transitions = exportClips.map((c) => transitionsByName[c.name] || "cut");
       const motions = exportClips.map((c) => motionByName[c.name] || "none");
-      // Per-clip video params (parallel to exportClips). Images get 0/1/none.
-      // Default depends on length: a clip LONGER than its slot trims (1x + in-point,
-      // extra cut off); a clip SHORTER slows to fill the slot ("fit"). An explicit
-      // fitByName choice overrides the default.
       const modeOf = (c) => {
         const info = videoInfoByName[c.name];
         if (!info) return "fit";
@@ -844,11 +1080,10 @@ export default function Home() {
       motionByName, motionAmount, trimByName, volumeByName, fitByName, videoInfoByName, fadeIn, fadeOut, effectId, effectIntensity, effectByName,
       captionsOn, captionCues, captionStyle, captionColor, captionAnimation, captionSize, captionLineHeight, captionFontScale, captionFont, captionPosition]);
 
-  // --- SPIKE: WebCodecs GPU render (video-only, no audio). Proves the pipeline. ---
   const [wcBusy, setWcBusy] = useState(false);
   const [wcProgress, setWcProgress] = useState(0);
   const [wcPhase, setWcPhase] = useState("Rendering");
-  const [doneMsg, setDoneMsg] = useState(null);       // transient "render complete" toast
+  const [doneMsg, setDoneMsg] = useState(null);
   const doneTimerRef = useRef(0);
   const flashDone = useCallback((msg) => {
     setDoneMsg(msg);
@@ -856,10 +1091,10 @@ export default function Home() {
     doneTimerRef.current = setTimeout(() => setDoneMsg(null), 6000);
   }, []);
   const [wcOk, setWcOk] = useState(false);
-  const [serverAvailable, setServerAvailable] = useState(false); // ffmpeg backend reachable?
-  const [wcEnabled, setWcEnabled] = useState(true); // WebCodecs on by default (desktop)
-  const [wcProfile, setWcProfile] = useState(null); // resolved render profile (mp4)
-  const [renderChecked, setRenderChecked] = useState(false); // capability probes done
+  const [serverAvailable, setServerAvailable] = useState(false);
+  const [wcEnabled, setWcEnabled] = useState(true);
+  const [wcProfile, setWcProfile] = useState(null);
+  const [renderChecked, setRenderChecked] = useState(false);
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -872,10 +1107,7 @@ export default function Home() {
     })();
     return () => { alive = false; };
   }, []);
-  // No way to export in this browser: no H.264 WebCodecs and no render backend.
   const cantRender = renderChecked && !wcOk && !serverAvailable;
-  // Resolve the output profile up front (recomputed when size/fps change) so the
-  // Save dialog and filename use the right extension without an await after click.
   useEffect(() => {
     let alive = true;
     if (!wcOk) { setWcProfile(null); return; }
@@ -883,28 +1115,23 @@ export default function Home() {
       .then((p) => { if (alive) setWcProfile(p); }).catch(() => { if (alive) setWcProfile(null); });
     return () => { alive = false; };
   }, [wcOk, renderDims.width, renderDims.height, fps]);
+
   const onWebCodecsTest = useCallback(async () => {
     wcCancelRef.current = false;
-    const logs = []; // diagnostics — shown in the failure dialog
+    const logs = [];
     const profile = wcProfile;
     if (!profile) {
       showAlert("This browser can't encode video. Use Chrome, Edge, or Safari 16.4+.", { title: "Fast render unavailable" });
       return;
     }
     const fileName = `${((currentProject && currentProject.name) || "autoeditor").replace(/[^\w.-]+/g, "_") || "autoeditor"}.mp4`;
-    // The renderer muxes into a chunked buffer (no single-ArrayBuffer size limit),
-    // so large videos download normally — no save dialog / File System API needed.
     const writable = null;
     setWcBusy(true); setWcProgress(0); setWcPhase("Rendering");
-    // Play inaudible audio for the duration so a backgrounded tab keeps rendering
-    // at full speed (started here, inside the click gesture, so it's allowed).
     const stopKeepAwake = startKeepAwake();
     try {
       const exportClips = trimClips(clips, exportDuration);
       const transitions = exportClips.map((c) => transitionsByName[c.name] || "cut");
       const motions = exportClips.map((c) => motionByName[c.name] || "none");
-      // Per-clip video params (parallel to exportClips), same rule as the ffmpeg
-      // path: long clip → trim (1x + in-point), short clip → fit (slow to fill).
       const modeOf = (c) => {
         const info = videoInfoByName[c.name];
         if (!info) return "fit";
@@ -921,10 +1148,6 @@ export default function Home() {
       const volumes = exportClips.map((c) =>
         Object.prototype.hasOwnProperty.call(videosByName, c.name)
           ? (volumeByName[c.name] == null ? 0.5 : volumeByName[c.name]) : 0);
-      // Request the full 8 Mbps. The renderer decides the effective rate: a streamed
-      // (to-disk) output keeps it, while an in-memory output is capped to a memory-safe
-      // rate for long videos — it makes that call because only it knows whether streaming
-      // actually engaged (see renderWebCodecs).
       const bitrate = 8_000_000;
       const blob = await renderWebCodecs(
         {
@@ -942,17 +1165,14 @@ export default function Home() {
         logs,
         writable,
       );
-      // Audio can be dropped without failing the whole render (e.g. an unsupported
-      // codec/rate) — the video still saves. Surface that clearly so a silent, soundless
-      // file isn't a surprise.
       const audioIssue = logs.find((l) => /audio failed|produced no audio/i.test(l));
-      if (blob) { // in-memory result → download; a streamed render is already on disk
+      if (blob) {
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url; a.download = fileName; a.click();
         setTimeout(() => URL.revokeObjectURL(url), 60000);
         flashDone(audioIssue ? `Downloaded “${fileName}” — no audio` : `Downloaded “${fileName}”`);
-      } else { // streamed straight to the file the user chose — no browser download
+      } else {
         flashDone(audioIssue ? `Saved “${fileName}” — no audio` : `Saved to “${fileName}”`);
       }
       if (audioIssue) {
@@ -960,7 +1180,7 @@ export default function Home() {
           { title: "Video saved without audio", details: `${audioIssue}\n\nThis usually means an unusual audio format. Try re-exporting the voiceover as a standard 48 kHz WAV or MP3 and render again.` });
       }
     } catch (e) {
-      if (writable) { try { await writable.abort(); } catch (_) {} } // discard partial file
+      if (writable) { try { await writable.abort(); } catch (_) {} }
       if (!(e && e.cancelled)) {
         const details = [
           `Error: ${e && e.message ? e.message : String(e)}`,
@@ -973,25 +1193,8 @@ export default function Home() {
           `userAgent: ${typeof navigator !== "undefined" ? navigator.userAgent : "?"}`,
           e && e.stack ? `\nstack:\n${e.stack}` : "",
         ].join("\n");
-        // WebKit's (Safari / any iOS browser) video encoder gives up on long encodes
-        // with "Encoding task did not complete" (then "not configured"). It's a browser
-        // limit — Chromium handles it — so point the user there instead of a generic error.
-        const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
-        const isIOS = /iPad|iPhone|iPod/.test(ua);
-        const isMacSafari = /Macintosh/.test(ua) && / Version\/.*Safari/.test(ua) && !/Chrome|Chromium|CriOS|Edg/.test(ua);
-        const msg = (e && e.message ? e.message : "").toLowerCase();
-        const encoderGaveUp = msg.includes("not configured") || msg.includes("did not complete") || logs.some((l) => /did not complete/i.test(l));
-        if (isIOS && encoderGaveUp) {
-          // Every browser on iPhone/iPad is WebKit, so "use Chrome on iPhone" wouldn't help.
-          showAlert("This video is too long for an iPhone or iPad to finish encoding — every browser on iOS shares the same limit. Please render on a computer (Chrome or Edge) or an Android phone, or export a shorter / lower-resolution video.",
-            { title: "Render long videos on a computer", details });
-        } else if (isMacSafari && encoderGaveUp) {
-          showAlert("Safari couldn’t finish this render — its video encoder gives up on long videos. Please render in Google Chrome or Microsoft Edge on this Mac (or export a shorter / lower-resolution video).",
-            { title: "Use Chrome or Edge for long renders", details });
-        } else {
-          showAlert("The Fast render failed. Copy the details below if you want to report it.",
-            { title: "Fast render failed", details });
-        }
+        showAlert("The Fast render failed. Copy the details below if you want to report it.",
+          { title: "Fast render failed", details });
       }
     } finally {
       stopKeepAwake();
@@ -1029,21 +1232,55 @@ export default function Home() {
       if (imageFiles.length) {
         await addImages(imageFiles);
       }
-      const sampleCaptions = `1\n00:00:00,500 --> 00:00:03,000\nAutoEditor Studio Demo\n\n2\n00:00:03,100 --> 00:00:06,800\nAutomated timeline synced to voiceover\n\n3\n00:00:07,000 --> 00:00:11,500\nVibrant animated captions with custom styling\n\n4\n00:00:12,000 --> 00:00:15,800\nKinetic transitions and atmosphere effects\n\n5\n00:00:16,000 --> 00:00:20,000\nHigh-speed WebCodecs MP4 rendering`;
+      const sampleCaptions = `1\n00:00:00,500 --> 00:00:03,000\nThe Lost City of Atlantis — Narrative Production\n\n2\n00:00:03,100 --> 00:00:06,800\nAutomated timeline synced to voiceover\n\n3\n00:00:07,000 --> 00:00:11,500\nVibrant animated captions with custom styling\n\n4\n00:00:12,000 --> 00:00:15,800\nKinetic transitions and atmosphere effects\n\n5\n00:00:16,000 --> 00:00:20,000\nHigh-speed WebCodecs MP4 rendering`;
       setCaptionRaw(sampleCaptions);
       setCaptionName("demo_captions.srt");
       setCaptionsOn(true);
       setCaptionColor("#00F0FF");
       setCaptionAnimation("pop");
+
+      // Also populate sample narrative stages so user can inspect all stages or jump to editor
+      setCurrentProject((p) => p ? { ...p, name: "The Lost City of Atlantis" } : p);
+      setNarrative((prev) => ({
+        ...prev,
+        currentStage: 8,
+        maxUnlockedStage: 10,
+        status: "Ready for Editing",
+        selectedConcept: {
+          id: "sample_c1",
+          title: "The Lost City of Atlantis — What Ancient Records Actually Reveal",
+          premise: "An investigative documentary exploring archaeological discoveries and Plato's original texts.",
+          niche: "History / Documentary",
+          subNiche: "Ancient Mysteries",
+          targetAudience: "Curious documentary viewers",
+          mainHook: "You've probably heard of Atlantis... but what if the real story was hidden in plain sight?",
+          storyStructure: "Origin myth -> Geological evidence -> Modern underwater discoveries",
+          narrationStyle: "Documentary",
+          visualDirection: "Cinematic underwater ruins and ancient maps",
+          viewerAppeal: "High curiosity gap",
+          differentiation: "Evidence-first narrative",
+          payoff: "How real sunken cities shaped the legend",
+        },
+        approvedScript:
+          "You've probably heard of Atlantis, but what if it was inspired by a real catastrophe? For centuries, this lost city has captured the imagination of explorers, historians, and scientists. In this video, we explore the ancient records, geological theories, and underwater discoveries that reveal the truth behind the legend.",
+        scriptDraft:
+          "You've probably heard of Atlantis, but what if it was inspired by a real catastrophe? For centuries, this lost city has captured the imagination of explorers, historians, and scientists. In this video, we explore the ancient records, geological theories, and underwater discoveries that reveal the truth behind the legend.",
+        actualDurationSec: 37,
+        audioConfirmed: true,
+        scenesConfirmed: true,
+        scenes: [
+          { id: "sc1", sceneNumber: 1, startTime: 0, endTime: 3, duration: 3, scriptExcerpt: "You've probably heard of Atlantis...", visualDescription: "Vast underwater city ruins with glowing columns", mainSubject: "Sunken ruins", environment: "Deep ocean", emotionalTone: "Mysterious", cameraFraming: "wide shot", transitionSuggestion: "fade" },
+          { id: "sc2", sceneNumber: 2, startTime: 3, endTime: 7, duration: 4, scriptExcerpt: "For centuries, this lost city has captured imagination...", visualDescription: "Ancient parchment scroll and bronze compass", mainSubject: "Ancient map", environment: "Archive", emotionalTone: "Curious", cameraFraming: "close-up", transitionSuggestion: "fade" },
+          { id: "sc3", sceneNumber: 3, startTime: 7, endTime: 12, duration: 5, scriptExcerpt: "Explorers and scientists searched the Mediterranean...", visualDescription: "Research vessel scanning the ocean floor with sonar", mainSubject: "Expedition ship", environment: "Open sea", emotionalTone: "Investigative", cameraFraming: "aerial shot", transitionSuggestion: "wipeleft" },
+        ],
+      }));
     } catch (err) {
       setError("Failed to load demo: " + (err.message || err));
     } finally {
       setLoadingSample(false);
     }
-  }, [onAudio, addImages]);
+  }, [onAudio, addImages, setCaptionsOn, setCaptionColor, setCaptionAnimation]);
 
-  // Browser can't export video (no H.264 WebCodecs, no render backend) — block the
-  // whole app; there's no point letting them create projects they can't render.
   if (cantRender) {
     return (
       <main className="unsupported">
@@ -1051,7 +1288,7 @@ export default function Home() {
           <img className="unsupported__logo" src="/logo.svg" width="52" height="52" alt="" />
           <h1 className="unsupported__h">Open in Chrome, Edge, or Safari</h1>
           <p className="unsupported__p">
-            <span className="unsupported__brand">TryAIToday AutoEditor</span> exports video using your
+            <span className="unsupported__brand">Universal YouTube Narrative Studio</span> exports video using your
             browser’s built-in video encoder — which this browser doesn’t have.
           </p>
           <p className="unsupported__p">
@@ -1072,10 +1309,18 @@ export default function Home() {
           onNew={newProject}
           onOpen={openProject}
           onRename={onRenameProject}
+          onDuplicate={onDuplicateProject}
+          onArchive={onArchiveProject}
           onDelete={onDeleteProject}
           storage={storage}
           theme={theme}
           setTheme={setTheme}
+          uiLang={uiLang}
+          setUiLang={setUiLang}
+          globalSettings={globalSettings}
+          onSaveGlobalSettings={handleSaveGlobalSettings}
+          activeNav={dashboardNav}
+          setActiveNav={setDashboardNav}
         />
       </>
     );
@@ -1083,8 +1328,23 @@ export default function Home() {
 
   return (
     <>
-    <DialogHost />
-    <main className="app">
+      <DialogHost />
+      <SeoModal
+        open={seoModalOpen}
+        onClose={() => setSeoModalOpen(false)}
+        projectName={currentProject?.name || "Untitled Project"}
+        narrative={narrative}
+        globalSettings={globalSettings}
+        onUpdateSeo={(seoPkg) =>
+          updateNarrative((prev) => ({
+            ...prev,
+            seoPackage: seoPkg,
+            outdated: { ...prev.outdated, seo: false },
+          }))
+        }
+        uiLang={uiLang}
+      />
+
       {doneMsg && (
         <div className="donetoast" role="status" aria-live="polite" onClick={() => setDoneMsg(null)}>
           <span className="donetoast__ok" aria-hidden="true">✓</span>
@@ -1097,155 +1357,6 @@ export default function Home() {
           Saving project…
         </div>
       )}
-      {showEditor ? (
-        <header className="nav nav--editor">
-          <div className="nav__left">
-            <button className="nav__back" onClick={backToProjects} title="Back to projects / العودة للمشاريع">
-              <span className="nav__back-arrow">←</span>
-              <span className="nav__back-text">Projects</span>
-            </button>
-            <div className="nav__divider" />
-            <div className="nav__brand-mini">
-              <img className="brand__logo-mini" src="/logo.svg" alt="" width="22" height="22" />
-              <button className="nav__proj-btn" onClick={renameCurrent} title="Click to rename project / تعديل اسم المشروع">
-                <span className="nav__proj-name">{currentProject ? (currentProject.name || "Untitled project") : "AutoEditor"}</span>
-                <span className="nav__proj-edit">✎</span>
-              </button>
-            </div>
-            <span className="nav__saved-tag">✓ Auto-saved</span>
-          </div>
-
-          <div className="nav__center">
-            <Dropzone
-              compact accept="audio/*" onFiles={onAudio} icon="♪"
-              title="Voiceover" filled={!!audioFile}
-              filledLabel={audioFile ? audioFile.name : "+ Audio"}
-            />
-            <Dropzone
-              compact multiple accept="image/*,video/*" onFiles={addImages} icon="▦"
-              title="Media" filled={imageCount > 0}
-              filledLabel={imageCount ? `${imageCount} clips` : "+ Media"}
-            />
-            <Dropzone
-              compact accept=".srt,.vtt,.txt,text/plain" onFiles={onCaptionFile} icon="💬"
-              title="Captions" filled={!!captionRaw}
-              filledLabel={captionName || "+ Captions"}
-            />
-          </div>
-
-          <div className="nav__right">
-            <div className="nav__history">
-              <button
-                type="button"
-                className="nav__hbtn"
-                onClick={undo}
-                disabled={!canUndo}
-                title="Undo / تراجع (Ctrl+Z)"
-                aria-label="Undo"
-              >
-                <span>↺</span>
-              </button>
-              <button
-                type="button"
-                className="nav__hbtn"
-                onClick={redo}
-                disabled={!canRedo}
-                title="Redo / إعادة (Ctrl+Y)"
-                aria-label="Redo"
-              >
-                <span>↻</span>
-              </button>
-            </div>
-
-            <button
-              type="button"
-              className="theme-toggle-btn"
-              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-              title={theme === "dark" ? "Switch to Light Mode (الوضع النهاري)" : "Switch to Dark Mode (الوضع الليلي)"}
-            >
-              <span className="theme-toggle-icon">{theme === "dark" ? "☀️" : "🌙"}</span>
-              <span className="theme-toggle-label">{theme === "dark" ? "نهار" : "ليل"}</span>
-            </button>
-
-            <a
-              className="dc-link"
-              href="https://discord.gg/5sxVBf3kx8"
-              target="_blank"
-              rel="noopener noreferrer"
-              title="Join Discord"
-            >
-              <svg className="dc-link__icon" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
-                <path d="M20.317 4.3698a19.7913 19.7913 0 0 0-4.8851-1.5152.0741.0741 0 0 0-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 0 0-.0785-.037 19.7363 19.7363 0 0 0-4.8852 1.515.0699.0699 0 0 0-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 0 0 .0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 0 0 .0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 0 0-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 0 1-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 0 1 .0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 0 1 .0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 0 1-.0066.1276 12.2986 12.2986 0 0 1-1.873.8914.0766.0766 0 0 0-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 0 0 .0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 0 0 .0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 0 0-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189z"/>
-              </svg>
-            </a>
-
-            <button
-              type="button"
-              className="btn-export-quick"
-              onClick={() => setEditorTab("export")}
-              title="Open export settings and render MP4"
-            >
-              <span>🚀</span>
-              <span>Export</span>
-            </button>
-            <StorageRing storage={storage} />
-          </div>
-        </header>
-      ) : (
-        <header className="nav nav--onboard">
-          <div className="nav__brand">
-            <button className="nav__back" onClick={backToProjects} title="Back to your projects">← Projects</button>
-            <img className="brand__logo" src="/logo.svg" alt="" width="26" height="26" />
-            <span className="brand__name"><span className="brand__pre">AutoEditor</span> Studio</span>
-          </div>
-          <div className="nav__links">
-            <button
-              type="button"
-              className="theme-toggle-btn"
-              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-              title={theme === "dark" ? "Switch to Light Mode" : "Switch to Dark Mode"}
-            >
-              <span className="theme-toggle-icon">{theme === "dark" ? "☀️" : "🌙"}</span>
-              <span className="theme-toggle-label">{theme === "dark" ? "نهار" : "ليل"}</span>
-            </button>
-            <a
-              className="dc-link"
-              href="https://discord.gg/5sxVBf3kx8"
-              target="_blank"
-              rel="noopener noreferrer"
-              title="Join the TryAIToday Discord"
-            >
-              <svg className="dc-link__icon" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">
-                <path d="M20.317 4.3698a19.7913 19.7913 0 0 0-4.8851-1.5152.0741.0741 0 0 0-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 0 0-.0785-.037 19.7363 19.7363 0 0 0-4.8852 1.515.0699.0699 0 0 0-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 0 0 .0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 0 0 .0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 0 0-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 0 1-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 0 1 .0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 0 1 .0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 0 1-.0066.1276 12.2986 12.2986 0 0 1-1.873.8914.0766.0766 0 0 0-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 0 0 .0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 0 0 .0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 0 0-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189z"/>
-              </svg>
-              <span className="dc-link__text">Discord</span>
-            </a>
-            <StorageRing storage={storage} />
-          </div>
-        </header>
-      )}
-
-      {resume && (
-        <div className={`resume${resume.url ? " resume--done" : resume.error ? " resume--bad" : ""}`}>
-          {resume.busy && (
-            <span className="resume__msg">
-              <span className="resume__spin" aria-hidden="true" />
-              A render is still running… {Math.round(resume.progress * 100)}%
-            </span>
-          )}
-          {resume.url && (
-            <span className="resume__msg">
-              Your video finished rendering.
-              <a className="resume__dl" href={resume.url} download="autoeditor.mp4">Download</a>
-            </span>
-          )}
-          {resume.error && <span className="resume__msg">Last render failed: {resume.error}</span>}
-          {!resume.busy && (
-            <button className="resume__x" onClick={() => setResume(null)} aria-label="Dismiss">✕</button>
-          )}
-        </div>
-      )}
-
       {importing && (
         <div className="importing" role="status" aria-live="polite">
           <span className="importing__spin" aria-hidden="true" />
@@ -1253,148 +1364,106 @@ export default function Home() {
         </div>
       )}
 
-      <div className="content">
       {loadingProject ? (
         <div className="projload">
           <span className="projload__spin" aria-hidden="true" />
           <span className="projload__txt">Loading project…</span>
         </div>
-      ) : !showEditor ? (
-        <section className="onboard">
-          <h1 className="onboard__h">Sync your images to a voiceover, automatically.</h1>
-          <p className="onboard__p">
-            Name each image or video clip with the second it appears — <code>0-03.png</code> or
-            <code>0-03.mp4</code> cuts in at 0:03 — then import them with your voiceover. Video clips
-            can be trimmed, zoomed, and their sound mixed under the narration. Review everything below,
-            then build the timeline. Everything runs on your device. Nothing is uploaded.
-          </p>
-
-          <div className="onboard__demo-bar">
-            <button
-              type="button"
-              className="btn-demo"
-              disabled={loadingSample}
-              onClick={loadSampleDemo}
-            >
-              {loadingSample ? (
-                <>
-                  <span className="btn-demo__spin" />
-                  <span>Loading Demo Project…</span>
-                </>
-              ) : (
-                <>
-                  <span className="btn-demo__icon">⚡</span>
-                  <span>Load Sample Project / تجربة مشروع كامل بضغطة واحدة</span>
-                </>
-              )}
-            </button>
-          </div>
-
-          <div className="onboard__zones">
-            <Dropzone
-              accept="audio/*" onFiles={onAudio} icon="♪"
-              title="Voiceover audio"
-              hint="One MP3 or WAV — sets the total length"
-              filled={!!audioFile}
-              filledLabel={audioFile ? audioFile.name : ""}
-            />
-            <Dropzone
-              multiple accept="image/*,video/*" onFiles={addImages} icon="▦"
-              title={tray.length ? "Add more media" : "Storyboard images & video"}
-              hint="Images or video clips, named by timestamp (0-00, 0-06…). Drop files or whole folders — even several at once."
-              filled={false}
-            />
-          </div>
-
-          {tray.length > 0 && (
-            <div className="tray">
-              <div className="tray__head">
-                <span className="tray__count">{tray.length} image{tray.length > 1 ? "s" : ""} imported</span>
-                <span className="tray__sub">ordered by timestamp — hover to remove</span>
-              </div>
-              <div className="tray__grid">
-                {tray.map((t) => (
-                  <div key={t.id} className={`thumb${t.seconds == null ? " thumb--notime" : ""}`} title={t.name}>
-                    <img src={t.url} alt="" />
-                    <span className="thumb__time">{t.seconds != null ? fmtTime(t.seconds) : "no time"}</span>
-                    <button className="thumb__x" title="Remove this image" onClick={() => discardImage(t.id)}>✕</button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {imageCount > 0 && warnings.length > 0 && (
-            <div className="notes">{warnings.map((w, i) => <div className="note" key={i}>{w}</div>)}</div>
-          )}
-          {error && <div className="note note--bad">{error}</div>}
-
-          <div className="build-row">
-            <button
-              className="render build"
-              disabled={!audioFile || tray.length === 0 || clips.length === 0}
-              onClick={() => setBuilt(true)}
-            >
-              Build timeline →
-            </button>
-            <span className="build-hint">
-              {tray.length === 0
-                ? "Import your storyboard images to begin."
-                : !audioFile
-                  ? "Add a voiceover to build the timeline."
-                  : `${tray.length} image${tray.length > 1 ? "s" : ""} · ready to build`}
-            </span>
-          </div>
-        </section>
       ) : (
-        <Editor
-          clips={clips} imageEls={imageEls} audioUrl={audioUrl}
-          duration={audioDuration} peaks={peaks} dims={dims}
-          aspect={aspect} setAspect={setAspect} fps={fps} setFps={setFps}
-          renderQuality={renderQuality} setRenderQuality={setRenderQuality} renderDims={renderDims}
-          onWebCodecsTest={onWebCodecsTest} onWebCodecsCancel={onWebCodecsCancel}
-          wcBusy={wcBusy} wcProgress={wcProgress} wcPhase={wcPhase} wcAvailable={wcOk} serverAvailable={serverAvailable}
-          wcEnabled={wcEnabled} setWcEnabled={setWcEnabled}
-          onRender={onRender} onCancel={onCancel} busy={busy} progress={progress}
-          outUrl={outUrl} error={error} warnings={warnings}
-          replaceImage={replaceImage} removeImage={removeImage} fillGap={fillGap}
-          resizeBoundary={resizeBoundary}
-          transitionsByName={transitionsByName} transitionDuration={transitionDuration}
-          setTransition={setTransition} applyTransitionAll={applyTransitionAll}
-          applyTransitionMix={applyTransitionMix}
-          setTransitionDuration={setTransitionDuration}
-          fadeIn={fadeIn} setFadeIn={setFadeIn}
-          effectId={effectId} setEffectId={setEffectId}
-          effectIntensity={effectIntensity} setEffectIntensity={setEffectIntensity}
-          fadeOut={fadeOut} setFadeOut={setFadeOut}
-          motionByName={motionByName} setMotion={setMotion}
-          effectByName={effectByName} setClipEffect={setClipEffect} removeClipEffect={removeClipEffect}
-          sfx={sfx} sfxResolved={sfxResolved} sfxUploads={sfxUploads}
-          selectedSound={selectedSound} setSelectedSound={setSelectedSound}
-          addSfx={addSfx} moveSfx={moveSfx} setSfxVolume={setSfxVolume} removeSfx={removeSfx} uploadSfx={uploadSfx}
-          applyMotionAll={applyMotionAll} applyMotionAlternate={applyMotionAlternate}
-          motionAmount={motionAmount} setMotionAmount={setMotionAmount}
-          videoInfoByName={videoInfoByName}
-          trimByName={trimByName} setTrim={setTrim}
-          volumeByName={volumeByName} setVolume={setVolume}
-          fitByName={fitByName} setFit={setFit}
-          trimEnd={exportDuration} setTrimEnd={setTrimEnd} exportDuration={exportDuration}
-          undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo}
-          captionCues={captionCues} captionsOn={captionsOn} setCaptionsOn={setCaptionsOn}
-          captionStyle={captionStyle} setCaptionStyle={setCaptionStyle}
-          captionColor={captionColor} setCaptionColor={setCaptionColor}
-          captionAnimation={captionAnimation} setCaptionAnimation={setCaptionAnimation}
-          captionSize={captionSize} setCaptionSize={setCaptionSize}
-          captionLineHeight={captionLineHeight} setCaptionLineHeight={setCaptionLineHeight}
-          captionFontScale={captionFontScale} setCaptionFontScale={setCaptionFontScale}
-          captionFont={captionFont} setCaptionFont={setCaptionFont}
-          captionPosition={captionPosition} setCaptionPosition={setCaptionPosition}
-          captionName={captionName} captionError={captionError} onCaptionFile={onCaptionFile}
-          activeTab={editorTab} onTabChange={setEditorTab}
+        <NarrativeWorkspace
+          currentProject={currentProject}
+          onRenameProject={renameCurrent}
+          narrative={narrative}
+          updateNarrative={updateNarrative}
+          globalSettings={globalSettings}
+          onSaveGlobalSettings={handleSaveGlobalSettings}
+          applyChannelEditorPresets={applyChannelEditorPresets}
+          backToProjects={backToProjects}
+          openSettingsFromWorkspace={() => {
+            setDashboardNav("settings");
+            backToProjects();
+          }}
+          openChannelsFromWorkspace={() => {
+            setDashboardNav("channels");
+            backToProjects();
+          }}
+          audioFile={audioFile}
+          audioUrl={audioUrl}
+          audioDuration={audioDuration}
+          onAudio={onAudio}
+          slots={slots}
+          addImages={addImages}
+          replaceImage={replaceImage}
+          removeImage={removeImage}
+          syncScenesToEditorSlots={syncScenesToEditorSlots}
+          captionRaw={captionRaw}
+          captionName={captionName}
+          captionCues={captionCues}
+          captionError={captionError}
+          onCaptionFile={onCaptionFile}
+          onUpdateCaptionRaw={setCaptionRaw}
+          onOpenVideoEditor={handleOpenVideoEditor}
+          onOpenSeoModal={() => setSeoModalOpen(true)}
+          loadSampleDemo={loadSampleDemo}
+          loadingSample={loadingSample}
+          theme={theme}
+          setTheme={setTheme}
+          uiLang={uiLang}
+          setUiLang={setUiLang}
+          undo={undo}
+          redo={redo}
+          canUndo={canUndo}
+          canRedo={canRedo}
+          onQuickExport={() => setEditorTab("export")}
+          editorNode={
+            <Editor
+              clips={clips} imageEls={imageEls} audioUrl={audioUrl}
+              duration={audioDuration} peaks={peaks} dims={dims}
+              aspect={aspect} setAspect={setAspect} fps={fps} setFps={setFps}
+              renderQuality={renderQuality} setRenderQuality={setRenderQuality} renderDims={renderDims}
+              onWebCodecsTest={onWebCodecsTest} onWebCodecsCancel={onWebCodecsCancel}
+              wcBusy={wcBusy} wcProgress={wcProgress} wcPhase={wcPhase} wcAvailable={wcOk} serverAvailable={serverAvailable}
+              wcEnabled={wcEnabled} setWcEnabled={setWcEnabled}
+              onRender={onRender} onCancel={onCancel} busy={busy} progress={progress}
+              outUrl={outUrl} error={error} warnings={warnings}
+              replaceImage={replaceImage} removeImage={removeImage} fillGap={fillGap}
+              resizeBoundary={resizeBoundary}
+              transitionsByName={transitionsByName} transitionDuration={transitionDuration}
+              setTransition={setTransition} applyTransitionAll={applyTransitionAll}
+              applyTransitionMix={applyTransitionMix}
+              setTransitionDuration={setTransitionDuration}
+              fadeIn={fadeIn} setFadeIn={setFadeIn}
+              effectId={effectId} setEffectId={setEffectId}
+              effectIntensity={effectIntensity} setEffectIntensity={setEffectIntensity}
+              fadeOut={fadeOut} setFadeOut={setFadeOut}
+              motionByName={motionByName} setMotion={setMotion}
+              effectByName={effectByName} setClipEffect={setClipEffect} removeClipEffect={removeClipEffect}
+              sfx={sfx} sfxResolved={sfxResolved} sfxUploads={sfxUploads}
+              selectedSound={selectedSound} setSelectedSound={setSelectedSound}
+              addSfx={addSfx} moveSfx={moveSfx} setSfxVolume={setSfxVolume} removeSfx={removeSfx} uploadSfx={uploadSfx}
+              applyMotionAll={applyMotionAll} applyMotionAlternate={applyMotionAlternate}
+              motionAmount={motionAmount} setMotionAmount={setMotionAmount}
+              videoInfoByName={videoInfoByName}
+              trimByName={trimByName} setTrim={setTrim}
+              volumeByName={volumeByName} setVolume={setVolume}
+              fitByName={fitByName} setFit={setFit}
+              trimEnd={exportDuration} setTrimEnd={setTrimEnd} exportDuration={exportDuration}
+              undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo}
+              captionCues={captionCues} captionsOn={captionsOn} setCaptionsOn={setCaptionsOn}
+              captionStyle={captionStyle} setCaptionStyle={setCaptionStyle}
+              captionColor={captionColor} setCaptionColor={setCaptionColor}
+              captionAnimation={captionAnimation} setCaptionAnimation={setCaptionAnimation}
+              captionSize={captionSize} setCaptionSize={setCaptionSize}
+              captionLineHeight={captionLineHeight} setCaptionLineHeight={setCaptionLineHeight}
+              captionFontScale={captionFontScale} setCaptionFontScale={setCaptionFontScale}
+              captionFont={captionFont} setCaptionFont={setCaptionFont}
+              captionPosition={captionPosition} setCaptionPosition={setCaptionPosition}
+              captionName={captionName} captionError={captionError} onCaptionFile={onCaptionFile}
+              activeTab={editorTab} onTabChange={setEditorTab}
+            />
+          }
         />
       )}
-      </div>
-    </main>
     </>
   );
 }

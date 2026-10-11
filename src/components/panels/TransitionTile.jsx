@@ -9,7 +9,10 @@ const LOOP_MS = 1100;    // one A→B pass on hover
 // the editor/export use, so it matches the result. Blends between two sample
 // scenes (day -> sunset) so the motion reads. Static mid-frame at rest; loops
 // the A→B animation while hovered.
-export default function TransitionTile({ tr, on, onClick }) {
+export default function TransitionTile({ tr, t, on, active, onClick, onPick }) {
+  const item = tr || t || { id: "fade", label: "Fade" };
+  const isSelected = on ?? active ?? false;
+  const handleClick = onClick || onPick;
   const ref = useRef(null);
   const rafRef = useRef(0);
 
@@ -22,10 +25,10 @@ export default function TransitionTile({ tr, on, onClick }) {
     const cp = Math.max(0, Math.min(1, p)); // guard painters that use p as a radius/clip
     ctx.clearRect(0, 0, W, H);
     ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
-    if (from && to) transitionOf(tr.id).canvas(ctx, from, to, cp, W, H, 1, 1);
+    if (from && to) transitionOf(item.id).canvas(ctx, from, to, cp, W, H, 1, 1);
   };
 
-  useEffect(() => { paintAt(REST_P); return () => cancelAnimationFrame(rafRef.current); }, [tr.id]);
+  useEffect(() => { paintAt(REST_P); return () => cancelAnimationFrame(rafRef.current); }, [item.id]);
 
   const start = () => {
     cancelAnimationFrame(rafRef.current);
@@ -42,14 +45,14 @@ export default function TransitionTile({ tr, on, onClick }) {
   return (
     <button
       type="button"
-      className={`trtile ${on ? "is-on" : ""}`}
-      onClick={onClick}
+      className={`trtile ${isSelected ? "is-on" : ""}`}
+      onClick={handleClick}
       onPointerEnter={start}
       onPointerLeave={stop}
-      title={tr.label}
+      title={item.label}
     >
       <canvas ref={ref} width={140} height={140} className="trtile__cv" />
-      <span className="trtile__label">{tr.label}</span>
+      <span className="trtile__label">{item.label}</span>
     </button>
   );
 }

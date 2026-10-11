@@ -83,6 +83,84 @@ export const TRANSITIONS = {
       paint(c, t, W, H, st); c.restore();
     },
   },
+  circleclose: {
+    label: "Circle close", icon: "◉", xfade: "circleclose",
+    canvas: (c, f, t, p, W, H, sf = 1, st = 1) => {
+      paint(c, t, W, H, st);
+      c.save(); c.beginPath();
+      c.arc(W / 2, H / 2, (Math.hypot(W, H) / 2) * (1 - p), 0, Math.PI * 2); c.clip();
+      paint(c, f, W, H, sf); c.restore();
+    },
+  },
+  fadewhite: {
+    label: "Fade white", icon: "◑", xfade: "fadewhite",
+    canvas: (c, f, t, p, W, H, sf = 1, st = 1) => {
+      if (p < 0.5) {
+        paint(c, f, W, H, sf);
+        c.fillStyle = "#ffffff";
+        c.globalAlpha = p * 2;
+        c.fillRect(0, 0, W, H);
+      } else {
+        paint(c, t, W, H, st);
+        c.fillStyle = "#ffffff";
+        c.globalAlpha = (1 - p) * 2;
+        c.fillRect(0, 0, W, H);
+      }
+      c.globalAlpha = 1;
+    },
+  },
+  wipeup: {
+    label: "Wipe up", icon: "▲", xfade: "wipeup",
+    canvas: (c, f, t, p, W, H, sf = 1, st = 1) => {
+      paint(c, f, W, H, sf);
+      c.save(); c.beginPath(); const y = H * (1 - p); c.rect(0, y, W, H - y); c.clip();
+      paint(c, t, W, H, st); c.restore();
+    },
+  },
+  wipedown: {
+    label: "Wipe down", icon: "▼", xfade: "wipedown",
+    canvas: (c, f, t, p, W, H, sf = 1, st = 1) => {
+      paint(c, f, W, H, sf);
+      c.save(); c.beginPath(); c.rect(0, 0, W, H * p); c.clip();
+      paint(c, t, W, H, st); c.restore();
+    },
+  },
+  slideup: {
+    label: "Slide up", icon: "⇑", xfade: "slideup",
+    canvas: (c, f, t, p, W, H, sf = 1, st = 1) => {
+      c.save(); c.translate(0, -H * p); paint(c, f, W, H, sf); c.restore();
+      c.save(); c.translate(0, H * (1 - p)); paint(c, t, W, H, st); c.restore();
+    },
+  },
+  slidedown: {
+    label: "Slide down", icon: "⇓", xfade: "slidedown",
+    canvas: (c, f, t, p, W, H, sf = 1, st = 1) => {
+      c.save(); c.translate(0, H * p); paint(c, f, W, H, sf); c.restore();
+      c.save(); c.translate(0, -H * (1 - p)); paint(c, t, W, H, st); c.restore();
+    },
+  },
+  zoomin: {
+    label: "Zoom punch", icon: "⊕", xfade: "zoomin",
+    canvas: (c, f, t, p, W, H, sf = 1, st = 1) => {
+      paint(c, f, W, H, sf * (1 + p * 0.45));
+      c.globalAlpha = p;
+      paint(c, t, W, H, st * (0.75 + 0.25 * p));
+      c.globalAlpha = 1;
+    },
+  },
+  flash: {
+    label: "Camera flash", icon: "⚡", xfade: "fadegrays",
+    canvas: (c, f, t, p, W, H, sf = 1, st = 1) => {
+      paint(c, p < 0.45 ? f : t, W, H, p < 0.45 ? sf : st);
+      const flashAlpha = Math.max(0, 1 - Math.abs(p - 0.45) * 3.2);
+      if (flashAlpha > 0) {
+        c.fillStyle = "#fffbeb";
+        c.globalAlpha = flashAlpha;
+        c.fillRect(0, 0, W, H);
+        c.globalAlpha = 1;
+      }
+    },
+  },
 };
 
 export const TRANSITION_LIST = Object.keys(TRANSITIONS).map((id) => ({ id, ...TRANSITIONS[id] }));

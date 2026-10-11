@@ -9,9 +9,18 @@ function readEntry(entry, out) {
       entry.file((f) => { out.push(f); resolve(); }, () => resolve());
     } else if (entry.isDirectory) {
       const reader = entry.createReader();
+      const allEntries = [];
       const readBatch = () => reader.readEntries(async (batch) => {
-        if (!batch.length) return resolve();
-        await Promise.all(batch.map((e) => readEntry(e, out)));
+        if (!batch.length) {
+          allEntries.sort((a, b) =>
+            (a.name || "").localeCompare(b.name || "", undefined, { numeric: true, sensitivity: "base" })
+          );
+          for (const e of allEntries) {
+            await readEntry(e, out);
+          }
+          return resolve();
+        }
+        allEntries.push(...batch);
         readBatch();
       }, () => resolve());
       readBatch();
@@ -52,7 +61,9 @@ export default function Dropzone({
         .filter(Boolean);
       if (entries.length) {
         const out = [];
-        await Promise.all(entries.map((en) => readEntry(en, out)));
+        for (const en of entries) {
+          await readEntry(en, out);
+        }
         const prefix = accept && accept.endsWith("/*") ? accept.split("/")[0] : null;
         const files = prefix ? out.filter((f) => f.type.startsWith(`${prefix}/`)) : out;
         if (files.length) onFiles(files);

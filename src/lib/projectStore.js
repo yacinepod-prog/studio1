@@ -1,14 +1,15 @@
 // Client-side project storage (IndexedDB). Everything lives in the user's browser
-// — nothing is uploaded. Two object stores:
-//   - "projects": one record per project (name, timestamps, thumbnail, and the
-//     serialisable edit state; NO media bytes).
+// — nothing is uploaded. Three object stores:
+//   - "projects": one record per project (name, timestamps, thumbnail, workflow stage,
+//     status, narrative pipeline data, and the serialisable edit state; NO media bytes).
 //   - "media":    the actual image/audio/video Blobs, keyed "<projectId>/<mediaId>".
-// Media is stored separately so a big video doesn't get rewritten every autosave.
+//   - "settings": global configurable production presets & preferences.
 
 const DB_NAME = "autoeditor";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_PROJECTS = "projects";
 const STORE_MEDIA = "media";
+const STORE_SETTINGS = "settings";
 
 let dbPromise = null;
 
@@ -21,6 +22,7 @@ function openDB() {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE_PROJECTS)) db.createObjectStore(STORE_PROJECTS, { keyPath: "id" });
       if (!db.objectStoreNames.contains(STORE_MEDIA)) db.createObjectStore(STORE_MEDIA);
+      if (!db.objectStoreNames.contains(STORE_SETTINGS)) db.createObjectStore(STORE_SETTINGS);
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -49,7 +51,6 @@ function reqP(request) {
 
 // ---- storage durability ----------------------------------------------------
 
-// Ask the browser not to evict this origin's data under storage pressure.
 export async function requestPersist() {
   try { if (navigator.storage && navigator.storage.persist) return await navigator.storage.persist(); }
   catch (_) {}
@@ -72,12 +73,27 @@ export function newId() {
   return "p_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
 }
 
-// Metadata for the projects grid — never pulls media, so it's fast.
+// Metadata for the projects grid — never pulls media blobs, so it's fast.
 export async function listProjects() {
   const all = await tx(STORE_PROJECTS, "readonly", (s) => reqP(s.getAll()));
   return (all || [])
-    .map(({ id, name, createdAt, updatedAt, thumb, durationSec, clipCount }) =>
-      ({ id, name, createdAt, updatedAt, thumb, durationSec, clipCount }))
+    .map((p) => {
+      const np = p.data && p.data.narrative;
+      return {
+        id: p.id,
+        name: p.name,
+        createdAt: p.createdAt,
+        updatedAt: p.updatedAt,
+        thumb: p.thumb || (np && np.reference && np.reference.thumbnailUrl) || null,
+        durationSec: p.durationSec || (np && np.actualDurationSec) || (np && np.config && np.config.targetDurationMinutes ? np.config.targetDurationMinutes * 60 : 0),
+        clipCount: p.clipCount || (np && np.scenes ? np.scenes.length : 0),
+        niche: p.niche || (np && np.selectedConcept && np.selectedConcept.niche) || (np && np.analysis && np.analysis.niche) || "Documentary",
+        currentStage: p.currentStage || (np && np.currentStage) || 1,
+        progressPct: p.progressPct != null ? p.progressPct : (np && np.progressPct != null ? np.progressPct : 0),
+        status: p.status || (np && np.status) || "Draft",
+        archived: !!p.archived,
+      };
+    })
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 }
 
@@ -97,6 +113,39 @@ export async function renameProject(id, name) {
   rec.name = name; rec.updatedAt = Date.now();
   await tx(STORE_PROJECTS, "readwrite", (s) => reqP(s.put(rec)));
   return rec;
+}
+
+export async function archiveProject(id, archived = true) {
+  const rec = await getProject(id);
+  if (!rec) return null;
+  rec.archived = !!archived;
+  rec.updatedAt = Date.now();
+  await tx(STORE_PROJECTS, "readwrite", (s) => reqP(s.put(rec)));
+  return rec;
+}
+
+export async function duplicateProject(id) {
+  const rec = await getProject(id);
+  if (!rec) return null;
+  const copyId = newId();
+  const now = Date.now();
+  const cloned = JSON.parse(JSON.stringify(rec));
+  cloned.id = copyId;
+  cloned.name = `${rec.name || "Untitled"} (Copy)`;
+  cloned.createdAt = now;
+  cloned.updatedAt = now;
+  await tx(STORE_PROJECTS, "readwrite", (s) => reqP(s.put(cloned)));
+
+  // Copy all media blobs from original project to the duplicate
+  try {
+    const mediaIds = await listMediaIds(id);
+    for (const mid of mediaIds) {
+      const blob = await getMedia(id, mid);
+      if (blob) await putMedia(copyId, mid, blob);
+    }
+  } catch (_) {}
+
+  return cloned;
 }
 
 export async function deleteProject(id) {
@@ -120,25 +169,19 @@ export async function deleteMedia(projectId, mediaId) {
   await tx(STORE_MEDIA, "readwrite", (s) => reqP(s.delete(mediaKey(projectId, mediaId))));
 }
 
-// All media ids currently stored for a project (the part after "<projectId>/").
 export async function listMediaIds(projectId) {
   const prefix = `${projectId}/`;
-  const range = IDBKeyRange.bound(prefix, prefix + "￿");
+  const range = IDBKeyRange.bound(prefix, prefix + "\uffff");
   const keys = await tx(STORE_MEDIA, "readonly", (s) => reqP(s.getAllKeys(range)));
   return (keys || []).map((k) => String(k).slice(prefix.length));
 }
 
 export async function deleteProjectMedia(projectId) {
   const prefix = `${projectId}/`;
-  const range = IDBKeyRange.bound(prefix, prefix + "￿");
+  const range = IDBKeyRange.bound(prefix, prefix + "\uffff");
   await tx(STORE_MEDIA, "readwrite", (s) => reqP(s.delete(range)));
 }
 
-// Reconcile stored media with what the project currently needs: write any missing
-// blobs, drop any orphaned ones. `wanted` is a Map(mediaId -> Blob). Only blobs
-// that aren't already stored are written, and everything happens in ONE
-// transaction — writing 250 blobs one-by-one (a transaction each) is what made
-// "back" slow right after importing a large project.
 export async function syncMedia(projectId, wanted) {
   const have = new Set(await listMediaIds(projectId));
   const wantIds = new Set(wanted.keys());
@@ -151,4 +194,23 @@ export async function syncMedia(projectId, wanted) {
     for (const [k, blob] of puts) s.put(blob, k);
     for (const k of dels) s.delete(k);
   });
+}
+
+// ---- global production settings --------------------------------------------
+
+export async function getGlobalSettings() {
+  try {
+    return await tx(STORE_SETTINGS, "readonly", (s) => reqP(s.get("production_settings")));
+  } catch (_) {
+    return null;
+  }
+}
+
+export async function saveGlobalSettings(settings) {
+  try {
+    await tx(STORE_SETTINGS, "readwrite", (s) => reqP(s.put(settings, "production_settings")));
+    return settings;
+  } catch (_) {
+    return settings;
+  }
 }
