@@ -896,7 +896,7 @@ export default function Home() {
     return () => clearTimeout(t);
   }, [view, currentProject, loadingProject, narrative, slots, transitionsByName, aspect, fps, renderQuality, transitionDuration,
       fadeIn, fadeOut, effectId, effectIntensity, motionByName, motionAmount, trimByName, volumeByName, fitByName, effectByName, trimEnd,
-      captionRaw, captionName, captionsOn, captionStyle, captionSize, captionLineHeight, captionFontScale,
+      captionRaw, captionName, captionsOn, captionStyle, captionColor, captionAnimation, captionSize, captionLineHeight, captionFontScale,
       captionFont, captionPosition, sfx, sfxUploads,
       audioFile, built]);
 

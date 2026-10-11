@@ -30,7 +30,7 @@ export default function CaptionsPanel({
       <div className="panel captions">
         <h2 className="panel__h">Captions</h2>
         {!(captionCues && captionCues.length) ? (
-          <div className="cap-empty">
+          <div className="cap-empty" style={{ marginBottom: 14 }}>
             <button type="button" className="cap-upload" onClick={() => capInputRef.current && capInputRef.current.click()}>
               <span className="cap-upload__i">⤒</span> Upload timestamped script
             </button>
@@ -42,80 +42,100 @@ export default function CaptionsPanel({
             {captionError && <div className="note note--bad">{captionError}</div>}
           </div>
         ) : (
-          <>
-            <div className="cap-bar">
+          <div className="cap-bar">
+            <button
+              type="button"
+              className={`cap-switch ${captionsOn ? "is-on" : ""}`}
+              onClick={() => setCaptionsOn(!captionsOn)}
+              aria-pressed={captionsOn}
+            >
+              <span className="cap-switch__box" />
+              {captionsOn ? "On" : "Off"}
+            </button>
+            <span className="cap-meta">
+              <span className="cap-meta__name">{captionName || "captions"}</span>
+              {captionCues.length} lines ·{" "}
+              <button type="button" className="cap-replace" onClick={() => capInputRef.current && capInputRef.current.click()}>replace</button>
+            </span>
+          </div>
+        )}
+
+        <div className="cap-body">
+          <div className="mini-h">Caption Animation / حركة الكتابة</div>
+          <div className="anim-chips">
+            {CAPTION_ANIMATIONS.map((an) => (
               <button
+                key={an.id}
                 type="button"
-                className={`cap-switch ${captionsOn ? "is-on" : ""}`}
-                onClick={() => setCaptionsOn(!captionsOn)}
-                aria-pressed={captionsOn}
+                className={`anim-chip ${captionAnimation === an.id ? "is-on" : ""}`}
+                onClick={() => setCaptionAnimation && setCaptionAnimation(an.id)}
+                title={an.desc}
               >
-                <span className="cap-switch__box" />
-                {captionsOn ? "On" : "Off"}
+                <span className="anim-chip__label">{an.label}</span>
               </button>
-              <span className="cap-meta">
-                <span className="cap-meta__name">{captionName || "captions"}</span>
-                {captionCues.length} lines ·{" "}
-                <button type="button" className="cap-replace" onClick={() => capInputRef.current && capInputRef.current.click()}>replace</button>
-              </span>
+            ))}
+          </div>
+
+          <div className="mini-h" style={{ marginTop: 14 }}>Caption Color / لون الكتابة (اختر أي لون)</div>
+          <div className="color-picker-row">
+            <div className="color-swatches">
+              {CAPTION_PRESET_COLORS.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  className={`color-swatch ${captionColor?.toLowerCase() === c.value.toLowerCase() ? "is-active" : ""}`}
+                  style={{ backgroundColor: c.value }}
+                  onClick={() => setCaptionColor && setCaptionColor(c.value)}
+                  title={c.label}
+                  aria-label={c.label}
+                />
+              ))}
             </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+              <label className="color-custom-btn" title="Choose custom color / اختيار لون مخصص">
+                <input
+                  type="color"
+                  className="color-native-input"
+                  value={/^#[0-9A-Fa-f]{6}$/.test(captionColor || "") ? captionColor : "#ffffff"}
+                  onChange={(e) => setCaptionColor && setCaptionColor(e.target.value.toUpperCase())}
+                />
+                <span className="color-custom-tag" style={{ color: captionColor || "#ffffff" }}>
+                  🎨 Custom
+                </span>
+              </label>
+              <input
+                type="text"
+                value={captionColor || "#FFFFFF"}
+                onChange={(e) => setCaptionColor && setCaptionColor(e.target.value)}
+                placeholder="#FFFFFF"
+                style={{
+                  width: 90,
+                  padding: "4px 8px",
+                  borderRadius: 6,
+                  border: "1px solid var(--line)",
+                  background: "var(--panel-2)",
+                  color: "var(--text)",
+                  fontFamily: "monospace",
+                  fontSize: 12,
+                  textTransform: "uppercase",
+                }}
+              />
+            </div>
+          </div>
 
-            <div className="cap-body" aria-disabled={!captionsOn}>
-              <div className="mini-h">Caption Animation / حركة الكتابة</div>
-              <div className="anim-chips">
-                {CAPTION_ANIMATIONS.map((an) => (
-                  <button
-                    key={an.id}
-                    type="button"
-                    className={`anim-chip ${captionAnimation === an.id ? "is-on" : ""}`}
-                    onClick={() => setCaptionAnimation && setCaptionAnimation(an.id)}
-                    title={an.desc}
-                  >
-                    <span className="anim-chip__label">{an.label}</span>
-                  </button>
-                ))}
-              </div>
-
-              <div className="mini-h" style={{ marginTop: 14 }}>Caption Color / لون الكتابة</div>
-              <div className="color-picker-row">
-                <div className="color-swatches">
-                  {CAPTION_PRESET_COLORS.map((c) => (
-                    <button
-                      key={c.id}
-                      type="button"
-                      className={`color-swatch ${captionColor?.toLowerCase() === c.value.toLowerCase() ? "is-active" : ""}`}
-                      style={{ backgroundColor: c.value }}
-                      onClick={() => setCaptionColor && setCaptionColor(c.value)}
-                      title={c.label}
-                      aria-label={c.label}
-                    />
-                  ))}
-                </div>
-                <label className="color-custom-btn" title="Choose custom color">
-                  <input
-                    type="color"
-                    className="color-native-input"
-                    value={captionColor || "#ffffff"}
-                    onChange={(e) => setCaptionColor && setCaptionColor(e.target.value)}
-                  />
-                  <span className="color-custom-tag" style={{ color: captionColor || "#ffffff" }}>
-                    {captionColor || "#ffffff"}
-                  </span>
-                </label>
-              </div>
-
-              <div className="mini-h" style={{ marginTop: 14 }}>Style Preset</div>
-              <div className="captiles">
-                {CAPTION_STYLE_LIST.map((st) => (
-                  <CaptionStyleTile
-                    key={st.id}
-                    st={st}
-                    fontFamily={captionFontFamily(captionFont)}
-                    on={captionStyle === st.id}
-                    onClick={() => setCaptionStyle(st.id)}
-                  />
-                ))}
-              </div>
+          <div className="mini-h" style={{ marginTop: 14 }}>Style Preset</div>
+          <div className="captiles">
+            {CAPTION_STYLE_LIST.map((st) => (
+              <CaptionStyleTile
+                key={st.id}
+                st={st}
+                color={captionColor}
+                fontFamily={captionFontFamily(captionFont)}
+                on={captionStyle === st.id}
+                onClick={() => setCaptionStyle(st.id)}
+              />
+            ))}
+          </div>
 
               <div className="mini-h" style={{ marginTop: 14 }}>Font Family</div>
               <div className="transitions__chips">
@@ -199,8 +219,6 @@ export default function CaptionsPanel({
               )}
             </div>
             {captionError && <div className="note note--bad">{captionError}</div>}
-          </>
-        )}
       </div>
       <input
         ref={capInputRef} type="file" accept=".srt,.vtt,.txt,text/plain" hidden

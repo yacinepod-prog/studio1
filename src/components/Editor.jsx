@@ -273,7 +273,7 @@ export default function Editor({
     }
   }, [clips, imageEls, transitionsByName, transitionDuration, motionByName, motionAmount,
       fadeIn, fadeOut, effectId, effectIntensity, effectByName, duration, exportDuration, playing, videoInfoByName, videoParams, volumeByName,
-      captionsOn, captionCues, captionStyle, captionSize, captionLineHeight, captionFontScale,
+      captionsOn, captionCues, captionStyle, captionColor, captionAnimation, captionSize, captionLineHeight, captionFontScale,
       captionFont, captionPosition]);
 
   useEffect(() => { drawRef.current = draw; }, [draw]);

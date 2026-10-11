@@ -47,7 +47,9 @@ import {
 } from "lucide-react";
 
 export default function ChannelsView({
+  settings,
   globalSettings,
+  onSaveSettings,
   onSaveGlobalSettings,
   onBack,
   uiLang = "en",
@@ -55,8 +57,10 @@ export default function ChannelsView({
   embedded = false,
 }) {
   const isAr = uiLang === "ar";
+  const resolvedSettings = globalSettings || settings;
+  const resolvedSave = onSaveGlobalSettings || onSaveSettings;
   const [draft, setDraft] = useState(() => {
-    const base = globalSettings || createDefaultGlobalSettings();
+    const base = resolvedSettings || createDefaultGlobalSettings();
     return {
       ...base,
       channels:
@@ -112,7 +116,9 @@ export default function ChannelsView({
 
   const persistDraft = (nextDraft) => {
     setDraft(nextDraft);
-    onSaveGlobalSettings(nextDraft);
+    if (typeof resolvedSave === "function") {
+      resolvedSave(nextDraft);
+    }
     setSavedBanner(true);
     setTimeout(() => setSavedBanner(false), 1800);
   };
@@ -391,9 +397,11 @@ export default function ChannelsView({
           captionFontFamily(edCfg.captionFont || "montserrat"),
           posPctVal,
           {
-            customColor: edCfg.captionColor || "#FFFFFF",
+            color: edCfg.captionColor || "#FFFFFF",
             animation: edCfg.captionAnimation || "pop",
-            animProgress: Math.min(1, (cyclePos % 1.8) / 0.35),
+            t: cyclePos % 1.8,
+            start: 0,
+            end: 1.8,
           }
         );
       }
@@ -1111,6 +1119,7 @@ export default function ChannelsView({
                         <CaptionStyleTile
                           key={s.id}
                           st={s}
+                          color={edCfg.captionColor || "#FFFFFF"}
                           fontFamily={captionFontFamily(edCfg.captionFont || "montserrat")}
                           on={(edCfg.captionStyle || "classic") === s.id}
                           onClick={() => updateEditorConfig({ captionStyle: s.id })}
@@ -1169,24 +1178,64 @@ export default function ChannelsView({
                         </div>
                       </div>
 
-                      <div className="uyns-field">
-                        <label>{isAr ? "لون النص" : "Highlight Color"}</label>
-                        <div className="flex items-center gap-2 flex-wrap pt-1">
-                          {CAPTION_PRESET_COLORS.map((c) => (
-                            <button
-                              key={c.hex}
-                              type="button"
-                              onClick={() => updateEditorConfig({ captionColor: c.hex })}
-                              className={`w-6 h-6 rounded-full border-2 transition-transform ${
-                                (edCfg.captionColor || "#FFFFFF").toUpperCase() ===
-                                c.hex.toUpperCase()
-                                  ? "border-[#3b82f6] scale-110 shadow-sm"
-                                  : "border-[var(--line)]"
-                              }`}
-                              style={{ backgroundColor: c.hex }}
-                              title={c.label}
+                      <div className="uyns-field sm:col-span-2">
+                        <label>{isAr ? "لون النص (أو اختر أي لون مخصص)" : "Caption Color (Presets & Custom Picker)"}</label>
+                        <div className="flex items-center gap-3 flex-wrap pt-1.5">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {CAPTION_PRESET_COLORS.map((c) => {
+                              const hexVal = String(c.value || c.hex || "#FFFFFF");
+                              const isSelected =
+                                String(edCfg.captionColor || "#FFFFFF").toUpperCase() ===
+                                hexVal.toUpperCase();
+                              return (
+                                <button
+                                  key={c.id || hexVal}
+                                  type="button"
+                                  onClick={() => updateEditorConfig({ captionColor: hexVal })}
+                                  className={`w-7 h-7 rounded-full border-2 transition-transform ${
+                                    isSelected
+                                      ? "border-[#3b82f6] scale-110 shadow-sm"
+                                      : "border-[var(--line)] hover:scale-105"
+                                  }`}
+                                  style={{ backgroundColor: hexVal }}
+                                  title={c.label}
+                                />
+                              );
+                            })}
+                          </div>
+
+                          <div className="flex items-center gap-2 ml-auto">
+                            <label
+                              className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[var(--line)] bg-[var(--panel-2)] cursor-pointer hover:border-[#3b82f6] transition-colors"
+                              title={isAr ? "اختر لوناً مخصصاً" : "Pick custom color"}
+                            >
+                              <input
+                                type="color"
+                                value={
+                                  /^#[0-9A-Fa-f]{6}$/.test(edCfg.captionColor || "")
+                                    ? edCfg.captionColor
+                                    : "#FFFFFF"
+                                }
+                                onChange={(e) =>
+                                  updateEditorConfig({ captionColor: e.target.value.toUpperCase() })
+                                }
+                                className="w-6 h-6 rounded cursor-pointer border-0 bg-transparent p-0"
+                              />
+                              <span className="text-xs font-semibold text-[var(--text-pure)]">
+                                {isAr ? "لون مخصص" : "Custom Color"}
+                              </span>
+                            </label>
+
+                            <input
+                              type="text"
+                              value={edCfg.captionColor || "#FFFFFF"}
+                              onChange={(e) =>
+                                updateEditorConfig({ captionColor: e.target.value })
+                              }
+                              placeholder="#FFFFFF"
+                              className="!w-24 text-xs font-mono uppercase text-center"
                             />
-                          ))}
+                          </div>
                         </div>
                       </div>
                     </div>
