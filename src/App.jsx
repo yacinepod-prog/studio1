@@ -1020,7 +1020,11 @@ export default function Home() {
   const renameCurrent = useCallback(async (directName, isInline = false) => {
     if (!currentProject) return;
     if (isInline && typeof directName === "string") {
+      const trimmed = directName.trim();
       setCurrentProject((p) => (p ? { ...p, name: directName } : p));
+      if (trimmed) {
+        onRenameProject(currentProject.id, trimmed);
+      }
       return;
     }
     const name = await showPrompt("Rename project", {
@@ -1333,6 +1337,7 @@ export default function Home() {
         open={seoModalOpen}
         onClose={() => setSeoModalOpen(false)}
         projectName={currentProject?.name || "Untitled Project"}
+        onSelectFinalTitle={(title) => renameCurrent(title, true)}
         narrative={narrative}
         globalSettings={globalSettings}
         onUpdateSeo={(seoPkg) =>

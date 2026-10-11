@@ -2935,12 +2935,19 @@ export default function NarrativeWorkspace({
                     {/* 5 YouTube Titles + Tags */}
                     <div className="lg:col-span-6 space-y-4">
                       <div className="uyns-card space-y-2.5">
-                        <div className="flex items-center justify-between">
-                          <h3 className="text-sm font-bold">
-                            {isAr
-                              ? "عناوين الفيديو المقترحة (متوافقة مع سياسة يوتيوب)"
-                              : "YouTube Title Suggestions (Policy-Compliant)"}
-                          </h3>
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <h3 className="text-sm font-bold">
+                              {isAr
+                                ? "عناوين الفيديو المقترحة — اختر العنوان النهائي للمشروع"
+                                : "YouTube Title Suggestions — Select Final Project Title"}
+                            </h3>
+                            <p className="text-[11px] text-[var(--muted)] mt-0.5">
+                              {isAr
+                                ? "عند اختيار أي عنوان كعنوان نهائي، يتغير اسم المشروع تلقائياً إلى هذا العنوان."
+                                : "Selecting a final title automatically updates your project name."}
+                            </p>
+                          </div>
                           <button
                             type="button"
                             onClick={() =>
@@ -2956,37 +2963,106 @@ export default function NarrativeWorkspace({
                           </button>
                         </div>
 
-                        {(narrative.seoPackage.titles || []).map((t, idx) => (
-                          <div key={idx} className="uyns-seo-title-row">
-                            <span className="uyns-seo-title-num">{idx + 1}</span>
-                            <input
-                              type="text"
-                              value={t}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                updateNarrative((prev) => {
-                                  const next = [...(prev.seoPackage?.titles || [])];
-                                  next[idx] = val;
-                                  return {
-                                    ...prev,
-                                    seoPackage: { ...prev.seoPackage, titles: next },
-                                  };
-                                });
-                              }}
-                            />
-                            <button
-                              type="button"
-                              onClick={() => copyToClipboard(t, `seo_t_${idx}`)}
-                              className="uyns-btn uyns-btn--sm"
+                        {(narrative.seoPackage.titles || []).map((t, idx) => {
+                          const isSelectedTitle =
+                            (narrative.seoPackage?.selectedTitle || currentProject?.name || "") === t &&
+                            Boolean(t && t.trim());
+                          const handlePickFinalTitle = () => {
+                            if (!t || !t.trim()) return;
+                            const cleanTitle = t.trim();
+                            updateNarrative((prev) => ({
+                              ...prev,
+                              seoPackage: {
+                                ...prev.seoPackage,
+                                selectedTitle: cleanTitle,
+                              },
+                            }));
+                            if (onRenameProject) {
+                              onRenameProject(cleanTitle, true);
+                            }
+                          };
+
+                          return (
+                            <div
+                              key={idx}
+                              className={`uyns-seo-title-row transition-all ${
+                                isSelectedTitle
+                                  ? "!border-[var(--accent)] !bg-[rgba(0,245,155,0.08)]"
+                                  : ""
+                              }`}
                             >
-                              {copiedId === `seo_t_${idx}` ? (
+                              <button
+                                type="button"
+                                onClick={handlePickFinalTitle}
+                                className={`uyns-seo-title-num cursor-pointer transition-colors ${
+                                  isSelectedTitle
+                                    ? "!bg-[var(--accent)] !text-[var(--accent-ink)]"
+                                    : ""
+                                }`}
+                                title={
+                                  isAr
+                                    ? "اعتماد كعنوان نهائي للمشروع"
+                                    : "Set as Final Project Title"
+                                }
+                              >
+                                {isSelectedTitle ? <Check className="w-3.5 h-3.5" /> : idx + 1}
+                              </button>
+                              <input
+                                type="text"
+                                value={t}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  updateNarrative((prev) => {
+                                    const next = [...(prev.seoPackage?.titles || [])];
+                                    next[idx] = val;
+                                    const wasSelected = prev.seoPackage?.selectedTitle === t;
+                                    return {
+                                      ...prev,
+                                      seoPackage: {
+                                        ...prev.seoPackage,
+                                        titles: next,
+                                        ...(wasSelected ? { selectedTitle: val } : {}),
+                                      },
+                                    };
+                                  });
+                                  if (isSelectedTitle && onRenameProject && val.trim()) {
+                                    onRenameProject(val.trim(), true);
+                                  }
+                                }}
+                              />
+                              <button
+                                type="button"
+                                onClick={handlePickFinalTitle}
+                                className={`uyns-btn uyns-btn--sm ${
+                                  isSelectedTitle ? "uyns-btn--primary" : "uyns-btn--ghost"
+                                }`}
+                              >
                                 <Check className="w-3.5 h-3.5" />
-                              ) : (
-                                <Copy className="w-3.5 h-3.5" />
-                              )}
-                            </button>
-                          </div>
-                        ))}
+                                <span>
+                                  {isSelectedTitle
+                                    ? isAr
+                                      ? "العنوان النهائي ✓"
+                                      : "Final Title ✓"
+                                    : isAr
+                                    ? "اختيار كعنوان نهائي"
+                                    : "Select as Final"}
+                                </span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => copyToClipboard(t, `seo_t_${idx}`)}
+                                className="uyns-btn uyns-btn--sm uyns-btn--ghost"
+                                title={isAr ? "نسخ العنوان" : "Copy title"}
+                              >
+                                {copiedId === `seo_t_${idx}` ? (
+                                  <Check className="w-3.5 h-3.5" />
+                                ) : (
+                                  <Copy className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            </div>
+                          );
+                        })}
                       </div>
 
                       <div className="uyns-card space-y-2.5">

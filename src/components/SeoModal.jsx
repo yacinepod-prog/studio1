@@ -19,6 +19,7 @@ export default function SeoModal({
   open,
   onClose,
   projectName,
+  onSelectFinalTitle,
   narrative,
   globalSettings,
   onUpdateSeo,
@@ -238,10 +239,17 @@ export default function SeoModal({
           {tab === "titles" && (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
               <div className="lg:col-span-2 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-semibold">
-                    {isAr ? "خيارات العناوين المقترحة (5)" : "Title Options (5)"}
-                  </h3>
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-semibold">
+                      {isAr ? "خيارات العناوين المقترحة (5) — اختر العنوان النهائي" : "Title Options (5) — Select Final Project Title"}
+                    </h3>
+                    <p className="text-[11px] text-[var(--muted)]">
+                      {isAr
+                        ? "اختيار العنوان النهائي يغير اسم المشروع تلقائياً."
+                        : "Selecting a final title updates the project name automatically."}
+                    </p>
+                  </div>
                   <button
                     type="button"
                     className="uyns-btn uyns-btn--sm"
@@ -252,22 +260,74 @@ export default function SeoModal({
                 </div>
                 {[0, 1, 2, 3, 4].map((idx) => {
                   const val = seo.titles?.[idx] || "";
+                  const isSelectedTitle =
+                    (seo.selectedTitle || projectName || "") === val && Boolean(val.trim());
+                  const handlePickFinal = () => {
+                    if (!val.trim()) return;
+                    const clean = val.trim();
+                    onUpdateSeo({ ...seo, selectedTitle: clean });
+                    if (onSelectFinalTitle) onSelectFinalTitle(clean);
+                  };
                   return (
-                    <div key={idx} className="uyns-seo-title-row">
-                      <span className="uyns-seo-title-num">{idx + 1}</span>
+                    <div
+                      key={idx}
+                      className={`uyns-seo-title-row transition-all ${
+                        isSelectedTitle
+                          ? "!border-[var(--accent)] !bg-[rgba(0,245,155,0.08)]"
+                          : ""
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={handlePickFinal}
+                        className={`uyns-seo-title-num cursor-pointer transition-colors ${
+                          isSelectedTitle
+                            ? "!bg-[var(--accent)] !text-[var(--accent-ink)]"
+                            : ""
+                        }`}
+                      >
+                        {isSelectedTitle ? <Check className="w-3.5 h-3.5" /> : idx + 1}
+                      </button>
                       <input
                         type="text"
                         value={val}
                         placeholder={`Title option ${idx + 1}...`}
                         onChange={(e) => {
+                          const nextVal = e.target.value;
                           const next = [...(seo.titles || ["", "", "", "", ""])];
-                          next[idx] = e.target.value;
-                          onUpdateSeo({ ...seo, titles: next });
+                          next[idx] = nextVal;
+                          const wasSelected = seo.selectedTitle === val;
+                          onUpdateSeo({
+                            ...seo,
+                            titles: next,
+                            ...(wasSelected ? { selectedTitle: nextVal } : {}),
+                          });
+                          if (isSelectedTitle && onSelectFinalTitle && nextVal.trim()) {
+                            onSelectFinalTitle(nextVal.trim());
+                          }
                         }}
                       />
                       <button
                         type="button"
-                        className="uyns-btn uyns-btn--sm"
+                        onClick={handlePickFinal}
+                        className={`uyns-btn uyns-btn--sm ${
+                          isSelectedTitle ? "uyns-btn--primary" : "uyns-btn--ghost"
+                        }`}
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                        <span>
+                          {isSelectedTitle
+                            ? isAr
+                              ? "العنوان النهائي ✓"
+                              : "Final Title ✓"
+                            : isAr
+                            ? "اختيار كعنوان نهائي"
+                            : "Select as Final"}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="uyns-btn uyns-btn--sm uyns-btn--ghost"
                         onClick={() => copyText(val, `t_${idx}`)}
                       >
                         {copiedKey === `t_${idx}` ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
