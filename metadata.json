@@ -1,0 +1,6 @@
+{
+  "name": "AutoEditor - Video & Voiceover Sync Editor",
+  "description": "Automated video editor to sync timestamp-named images and video clips to voiceover audio and export MP4 directly in your browser.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
